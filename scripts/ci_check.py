@@ -11,7 +11,9 @@ godot = os.environ.get("GODOT", "godot")
 commands = [
     (["--headless", "--path", ".", "--editor", "--quit"], None),
     (["--headless", "--path", ".", "--script", "tests/test_runner.gd"], "0 failures"),
+    (["--headless", "--path", ".", "--script", "tests/test_updater.gd"], "UPDATER_TEST_RESULT:"),
     (["--headless", "--path", ".", "--", "--smoke"], "UI_SMOKE_OK"),
+    (["--headless", "--path", ".", "--", "--launcher-smoke"], "LAUNCHER_SMOKE_OK"),
 ]
 for args, marker in commands:
     result = subprocess.run([godot, *args], text=True, stdout=subprocess.PIPE,

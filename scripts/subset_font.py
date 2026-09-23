@@ -12,6 +12,7 @@ from fontTools import subset
 
 root = Path(__file__).resolve().parents[1]
 text = "".join(p.read_text() for p in (root / "scripts").glob("*.gd"))
+text += "".join(p.read_text() for p in (root / "launcher").glob("*.gd"))
 text += (root / "data/items.json").read_text()
 text += "".join(chr(c) for c in range(32, 127))
 text += "关闭取消确认是否返回确定警告错误文件存档读取加载·—→▸●×…–"

@@ -1,8 +1,7 @@
 name: Godot prototype checks and builds
 on:
   push:
-    branches: [main, "codex/**"]
-  pull_request:
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
@@ -13,6 +12,8 @@ jobs:
   test-and-export:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    outputs:
+      version: ${{ steps.package.outputs.version }}
     env:
       GODOT_VERSION: 4.5.2
       GODOT: /tmp/godot/Godot_v4.5.2-stable_linux.x86_64
@@ -47,15 +48,32 @@ jobs:
           xvfb-run -a "$GODOT" --path . --audio-driver Dummy -- --capture
       - name: Export Web and Windows
         run: |
-          mkdir -p build/web build/windows
+          mkdir -p build/web build/windows build/launcher
           "$GODOT" --headless --path . --export-release Web build/web/index.html
           "$GODOT" --headless --path . --export-release "Windows Desktop" build/windows/toy-dg.exe
+          "$GODOT" --headless --path . --export-release "Windows Launcher" build/launcher/ToyDG-Launcher.exe
           cp THIRD_PARTY_NOTICES.md build/web/
           cp THIRD_PARTY_NOTICES.md build/windows/
           cp assets/fonts/OFL.txt build/web/
           cp assets/fonts/OFL.txt build/windows/
           test -s build/web/index.wasm
           test -s build/windows/toy-dg.exe
+      - name: Package versioned release
+        id: package
+        run: |
+          version="0.1.${GITHUB_RUN_NUMBER}"
+          python3 scripts/package_release.py "$version" "$GITHUB_SHA"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: toy-dg-release
+          path: build/release/
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: toy-dg-launcher
+          path: build/launcher/
+          retention-days: 14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: toy-dg-web
@@ -73,3 +91,78 @@ jobs:
           path: build/screenshots/
           if-no-files-found: ignore
           retention-days: 14
+
+  windows-smoke:
+    needs: test-and-export
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: toy-dg-release
+          path: release
+      - name: Run the exported Windows game and launcher
+        shell: pwsh
+        run: |
+          Expand-Archive release/toy-dg-windows.zip game
+          Expand-Archive release/toy-dg-launcher.zip launcher
+          function Test-Executable($exe, $flag, $marker, $name) {
+            $process = Start-Process -FilePath (Resolve-Path $exe).Path -ArgumentList "--headless", "--", $flag -RedirectStandardOutput "$name-out.txt" -RedirectStandardError "$name-err.txt" -PassThru
+            if (-not $process.WaitForExit(90000)) { $process.Kill(); throw "$name timed out" }
+            $text = (Get-Content "$name-out.txt" -Raw) + (Get-Content "$name-err.txt" -Raw)
+            Write-Output $text
+            if ($process.ExitCode -ne 0 -or $text -notmatch $marker -or $text -match "SCRIPT ERROR:|ERROR:") { throw "$name failed" }
+          }
+          Test-Executable "./game/toy-dg.exe" "--smoke" "UI_SMOKE_OK" "game"
+          Test-Executable "./launcher/ToyDG-Launcher.exe" "--launcher-smoke" "LAUNCHER_SMOKE_OK" "launcher"
+
+  publish:
+    needs: [test-and-export, windows-smoke]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: toy-dg-release
+          path: release
+      - name: Publish complete release after validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.test-and-export.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${RELEASE_VERSION}"
+          if gh release view "$tag" --json isDraft --jq '.isDraft' > existing.txt 2>/dev/null; then
+            if [ "$(cat existing.txt)" = "false" ]; then
+              echo "Published release already exists; leaving its bytes unchanged."
+              exit 0
+            fi
+          else
+            gh release create "$tag" --draft --target "$GITHUB_SHA" --title "地城拾遗 $tag" --notes-file release/release-notes.md
+          fi
+          gh release upload "$tag" release/toy-dg-windows.zip release/toy-dg-launcher.zip release/toy-dg-web.zip release/update.json --clobber
+          gh release edit "$tag" --draft=false --latest
+
+  live-update:
+    needs: publish
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: toy-dg-release
+          path: release
+      - name: Verify public update download, install and game startup on Windows
+        shell: pwsh
+        run: |
+          Expand-Archive release/toy-dg-launcher.zip launcher
+          $process = Start-Process -FilePath (Resolve-Path "./launcher/ToyDG-Launcher.exe").Path -ArgumentList "--headless", "--", "--launcher-update-test" -RedirectStandardOutput "update-out.txt" -RedirectStandardError "update-err.txt" -PassThru
+          if (-not $process.WaitForExit(360000)) { $process.Kill(); throw "Update test timed out" }
+          $text = (Get-Content "update-out.txt" -Raw) + (Get-Content "update-err.txt" -Raw)
+          Write-Output $text
+          if ($process.ExitCode -ne 0 -or $text -notmatch "LIVE_UPDATE_OK:" -or $text -match "SCRIPT ERROR:|ERROR:") { throw "Live update test failed" }

@@ -6,6 +6,15 @@
 
 ## 运行
 
+**推荐使用自动更新启动器：** 从[最新版本](https://github.com/XiminHu66/toy-dg/releases/latest)
+下载 `toy-dg-launcher.zip`，解压运行 `ToyDG-Launcher.exe`。启动器会自动检查、下载并安装游戏更新，
+完成后点击“开始游戏”。首次安装需要联网；之后断网也能启动已安装版本。无需安装Godot。
+
+[固定启动器下载链接](https://github.com/XiminHu66/toy-dg/releases/latest/download/toy-dg-launcher.zip)
+· [更新与存档说明](docs/updates.md)
+
+从源码运行：
+
 1. 下载或克隆本分支，使用 [Godot 4.5.2 标准版](https://github.com/godotengine/godot-builds/releases/tag/4.5.2-stable) 打开 `project.godot`。
 2. 按 **F6** 运行当前主场景，或 **F5** 运行项目。
 3. 先选择仓库里的「旧世指环」并点击「装备」，可解锁影步；然后点击「进入封印矿井」。
@@ -34,11 +43,12 @@
 
 [Actions](https://github.com/XiminHu66/toy-dg/actions) 中的 `Godot prototype checks and builds` 成功后，运行页面底部提供：
 
-- `toy-dg-windows`：解压后运行 `toy-dg.exe`（未签名原型，未完成Windows实机QA）。
+- `toy-dg-windows`：解压后运行 `toy-dg.exe`（单版本包，本身不检查更新）。
+- `toy-dg-launcher`：自动更新启动器，可检查并安装GitHub Releases中的新游戏版本。
 - `toy-dg-web`：解压后通过HTTP服务器运行；例如在目录中执行 `python -m http.server 8000`，再访问 `http://localhost:8000`。不能直接双击HTML。
 - `toy-dg-screenshots`：CI渲染的营地与战斗截图。
 
-Actions产物下载可能需要登录GitHub，默认保留14天。此项目尚未部署公开试玩站点，也没有自动修改GitHub Pages配置。网页存档限当前浏览器／站点，清除站点数据可能丢失存档。
+日常下载请用Releases中的启动器包；Actions产物可能需要登录GitHub，默认保留14天。主分支通过测试及Windows冒烟检查后发布Release。此项目尚未部署公开试玩站点，也没有自动修改GitHub Pages配置。网页存档限当前浏览器／站点，清除站点数据可能丢失存档。
 
 本地导出先在Godot中安装4.5.2导出模板，然后执行：
 
@@ -63,5 +73,8 @@ GODOT=/path/to/godot python3 scripts/ci_check.py
 - [完整策划 v0.2](docs/design-v0.2.md)
 - [原型已实现内容、简化项和下一步](docs/prototype-status.md)
 - [第三方素材与引擎说明](THIRD_PARTY_NOTICES.md)
+- [自动更新、回退与主分支发布](docs/updates.md)
+
+项目由单人维护，按用户要求直接在`main`开发；CI通过后发布新的可更新版本。
 
 源码当前未选择项目级开源许可证。字体按随附OFL单独授权。

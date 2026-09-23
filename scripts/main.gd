@@ -24,6 +24,9 @@ var save_ok := true
 var quit_after_test := false
 
 func _ready() -> void:
+	if OS.has_feature("launcher") or "--launcher-smoke" in OS.get_cmdline_user_args():
+		get_tree().call_deferred("change_scene_to_file","res://launcher/launcher.tscn")
+		return
 	font = load("res://assets/fonts/DungeonSans.ttf")
 	var theme_value := Theme.new()
 	theme_value.default_font = font
