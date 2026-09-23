@@ -1,0 +1,75 @@
+name: Godot prototype checks and builds
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: prototype-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test-and-export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GODOT_VERSION: 4.5.2
+      GODOT: /tmp/godot/Godot_v4.5.2-stable_linux.x86_64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install pinned Godot and export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/godot
+          curl -fsSL --retry 3 https://github.com/godotengine/godot-builds/releases/download/4.5.2-stable/Godot_v4.5.2-stable_linux.x86_64.zip -o /tmp/godot.zip
+          echo '87f6e6be292929e363d15ed9052f277b2ba4e95ed994e1e099048097be2dfd03  /tmp/godot.zip' | sha256sum -c -
+          unzip -q /tmp/godot.zip -d /tmp/godot
+          chmod +x "$GODOT"
+          curl -fsSL --retry 3 https://github.com/godotengine/godot-builds/releases/download/4.5.2-stable/Godot_v4.5.2-stable_export_templates.tpz -o /tmp/templates.tpz
+          echo 'ea50e5183f057d42b22120d0d0340205b98f51f8ff13c33c70fd4ac9077d2019  /tmp/templates.tpz' | sha256sum -c -
+          python3 - <<'PY'
+          import os, pathlib, zipfile
+          dest=pathlib.Path.home()/'.local/share/godot/export_templates/4.5.2.stable'
+          dest.mkdir(parents=True,exist_ok=True)
+          wanted={'web_nothreads_release.zip','web_nothreads_debug.zip','windows_release_x86_64.exe','windows_debug_x86_64.exe','version.txt'}
+          with zipfile.ZipFile('/tmp/templates.tpz') as archive:
+              for name in archive.namelist():
+                  if pathlib.Path(name).name in wanted:
+                      (dest/pathlib.Path(name).name).write_bytes(archive.read(name))
+          PY
+      - name: Import, rule tests, save tests, full route and UI smoke
+        run: python3 scripts/ci_check.py
+      - name: Capture desktop interface
+        run: |
+          mkdir -p build/screenshots
+          xvfb-run -a "$GODOT" --path . --audio-driver Dummy -- --capture
+      - name: Export Web and Windows
+        run: |
+          mkdir -p build/web build/windows
+          "$GODOT" --headless --path . --export-release Web build/web/index.html
+          "$GODOT" --headless --path . --export-release "Windows Desktop" build/windows/toy-dg.exe
+          cp THIRD_PARTY_NOTICES.md build/web/
+          cp THIRD_PARTY_NOTICES.md build/windows/
+          cp assets/fonts/OFL.txt build/web/
+          cp assets/fonts/OFL.txt build/windows/
+          test -s build/web/index.wasm
+          test -s build/windows/toy-dg.exe
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: toy-dg-web
+          path: build/web/
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: toy-dg-windows
+          path: build/windows/
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: toy-dg-screenshots
+          path: build/screenshots/
+          if-no-files-found: ignore
+          retention-days: 14
