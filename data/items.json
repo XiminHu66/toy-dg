@@ -1,0 +1,30 @@
+{
+  "bases": [
+    {"key":"sword","name":"折光长剑","type":"weapon","w":2,"h":3,"attack":7,"value":80},
+    {"key":"dagger","name":"鸦羽短刃","type":"weapon","w":1,"h":3,"attack":5,"value":65},
+    {"key":"coat","name":"拾遗者外套","type":"armor","w":2,"h":2,"defense":8,"value":75},
+    {"key":"ring","name":"旧世指环","type":"charm","w":1,"h":1,"hp":8,"value":45}
+  ],
+  "affixes": [
+    {"key":"attack","label":"攻击","min":2,"max":5},
+    {"key":"defense","label":"防御","min":3,"max":8},
+    {"key":"hp","label":"生命","min":6,"max":16},
+    {"key":"agility","label":"敏捷","min":2,"max":6},
+    {"key":"speed","label":"速度","min":1,"max":3},
+    {"key":"movement","label":"移动力","min":1,"max":1},
+    {"key":"crit","label":"暴击率百分点","min":3,"max":8},
+    {"key":"crit_damage","label":"暴击倍率百分点","min":10,"max":25},
+    {"key":"penetration","label":"固定破甲","min":3,"max":7},
+    {"key":"toughness","label":"韧性","min":3,"max":6},
+    {"key":"perception","label":"感知","min":4,"max":9},
+    {"key":"will","label":"意志","min":4,"max":9},
+    {"key":"bleed","label":"命中附加流血伤害","min":1,"max":3},
+    {"key":"shadowstep","label":"技能：影步","min":1,"max":1}
+  ],
+  "rarities": [
+    {"name":"普通","color":"a8b4c8","affixes":0,"multiplier":1.0},
+    {"name":"魔法","color":"6aaefc","affixes":1,"multiplier":1.6},
+    {"name":"稀有","color":"f1c67b","affixes":2,"multiplier":2.6},
+    {"name":"史诗","color":"c999ff","affixes":3,"multiplier":4.0}
+  ]
+}
