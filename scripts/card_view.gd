@@ -7,6 +7,10 @@ var ordinal := 0
 var summary := ""
 var compact := false
 var turn := 0
+var rest_position := Vector2.ZERO
+var rest_angle := 0.0
+var hand_placed := false
+var motion: Tween
 signal hovered(view: Control)
 signal unhovered(view: Control)
 
@@ -22,6 +26,9 @@ func _ready() -> void:
 		style.bg_color = Color("1a2938") if state!="hover" else Color("304457")
 		style.border_color = color if chosen or state in ["hover","focus"] else Color(color,0.55)
 		style.set_border_width_all(2)
+		style.shadow_color = Color(0,0,0,0.65)
+		style.shadow_size = 9
+		style.shadow_offset = Vector2(0,6)
 		style.set_corner_radius_all(9)
 		add_theme_stylebox_override(state,style)
 	var margin := MarginContainer.new()
@@ -74,9 +81,46 @@ func ignore_mouse(node: Node) -> void:
 func _get_drag_data(_point: Vector2) -> Variant:
 	if ordinal<=0 or disabled:
 		return null
-	var preview := Label.new()
-	preview.text = "「%s」→ 目标" % Cards.DATA[card_id].name
-	preview.add_theme_font_override("font",font)
-	preview.add_theme_font_size_override("font_size",22)
+	var preview: Control = get_script().new()
+	preview.card_id = card_id
+	preview.font = font
+	preview.summary = summary
+	preview.scale = Vector2(0.8,0.8)
+	preview.position = Vector2(-72,-184)
+	preview.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_drag_preview(preview)
 	return {"kind":"card","index":ordinal-1,"id":card_id,"turn":turn}
+
+func stop_motion() -> void:
+	if motion and motion.is_valid():
+		motion.kill()
+
+func deal_in(origin: Vector2,delay: float) -> void:
+	stop_motion()
+	position = origin
+	scale = Vector2(0.35,0.35)
+	rotation = -0.4
+	modulate.a = 0
+	motion = create_tween().set_parallel(true)
+	motion.tween_property(self,"position",rest_position,0.32).set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	motion.tween_property(self,"scale",Vector2.ONE,0.32).set_delay(delay)
+	motion.tween_property(self,"rotation",rest_angle,0.32).set_delay(delay)
+	motion.tween_property(self,"modulate:a",1.0,0.18).set_delay(delay)
+
+func focus_hand(active: bool) -> void:
+	if ordinal<=0:
+		return
+	stop_motion()
+	z_index = 40 if active else (20 if chosen else ordinal-1)
+	motion = create_tween().set_parallel(true)
+	motion.tween_property(self,"position",rest_position-Vector2(0,36 if active else 0),0.13).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	motion.tween_property(self,"scale",Vector2(1.06,1.06) if active else Vector2.ONE,0.13)
+	motion.tween_property(self,"rotation",0.0 if active else rest_angle,0.13)
+	motion.tween_property(self,"modulate:a",1.0,0.08)
+
+func discard_out(destination: Vector2) -> void:
+	stop_motion()
+	motion = create_tween().set_parallel(true)
+	motion.tween_property(self,"position",destination,0.22).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	motion.tween_property(self,"scale",Vector2(0.2,0.2),0.22)
+	motion.tween_property(self,"modulate:a",0.0,0.22)

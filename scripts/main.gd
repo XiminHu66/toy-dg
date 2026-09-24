@@ -20,6 +20,11 @@ var map_mode := "探索"
 var craft_id := ""
 var hand_views: Array = []
 var hand_dock: Control
+var rendered_hand: Array = []
+var rendered_round := -1
+var entering_cards: Array = []
+var combat_busy := false
+var input_shield: Control
 var build_version := "0.2.dev"
 var board: Control
 var item_details: RichTextLabel
@@ -110,6 +115,17 @@ func _ready() -> void:
 		await capture_screen("combat-720p")
 		get_window().size = Vector2i(960,600)
 		await capture_screen("combat-small")
+		get_window().size = Vector2i(1440,900)
+		game.start_encounter()
+		refresh()
+		await get_tree().create_timer(0.8).timeout
+		for i in range(game.hand.size()):
+			if Cards.DATA[game.hand[i]].has("attack"):
+				submit_card(i,game.enemies[0].id)
+				break
+		await capture_motion("play")
+		end_combat_turn()
+		await capture_motion("turn")
 		print("CAPTURE_OK")
 		get_tree().quit()
 	if "--smoke" in OS.get_cmdline_user_args():
@@ -132,8 +148,19 @@ func _ready() -> void:
 				push_error("Card click did not select attack")
 			var drag := {"kind":"card","index":attack_index,"id":game.hand[attack_index],"turn":game.round_no}
 			board._drop_data(board.enemy_center(0),drag)
+			var energy_after := game.energy
+			submit_card(attack_index,game.enemies[0].id)
+			if game.energy!=energy_after or not combat_busy:
+				push_error("Animation input lock did not prevent duplicate play")
+			await get_tree().create_timer(0.7).timeout
 			if game.hand.size()!=count_before-1+int(Cards.DATA[drag.id].get("draw",0)):
 				push_error("Drag-to-enemy did not play card")
+		var round_before := game.round_no
+		end_combat_turn()
+		end_combat_turn()
+		await get_tree().create_timer(1.2).timeout
+		if game.round_no!=round_before+1 or combat_busy:
+			push_error("Animated turn transition did not finish exactly once")
 		game.draw_cards(10)
 		refresh()
 		for dimensions in [Vector2i(1440,900),Vector2i(1280,720),Vector2i(960,600)]:
@@ -155,15 +182,24 @@ func _ready() -> void:
 		get_tree().quit()
 
 func settle_layout(name_value: String) -> void:
+	await get_tree().create_timer(0.65).timeout
 	await get_tree().process_frame
 	await get_tree().process_frame
 	await get_tree().process_frame
 	check_layout(name_value)
 
 func capture_screen(name_value: String) -> void:
-	await get_tree().create_timer(0.4).timeout
+	await get_tree().create_timer(0.75).timeout
 	await RenderingServer.frame_post_draw
 	get_viewport().get_texture().get_image().save_png("res://build/screenshots/"+name_value+".png")
+
+func capture_motion(prefix: String) -> void:
+	for i in range(20):
+		await get_tree().create_timer(0.05).timeout
+		await RenderingServer.frame_post_draw
+		var frame := get_viewport().get_texture().get_image()
+		frame.resize(864,540)
+		frame.save_png("res://build/screenshots/motion-%s-%02d.png" % [prefix,i])
 
 func check_layout(phase_name: String) -> void:
 	var rect := body.get_global_rect()
@@ -236,9 +272,10 @@ func refresh() -> void:
 	item_details = null
 	item_buttons = null
 	if game.phase == "combat":
-		var full := panel(body,true)
-		combat(full)
+		combat(body)
 	else:
+		rendered_hand.clear()
+		rendered_round = -1
 		var left := panel(body,true)
 		match game.phase:
 			"camp": camp(left)
@@ -377,30 +414,47 @@ func show_pile(title_value: String,ids: Array) -> void:
 	window.canceled.connect(window.queue_free)
 	window.popup_centered(Vector2i(840,550))
 
-func combat(column: VBoxContainer) -> void:
+func combat(parent: Control) -> void:
+	var previous := rendered_hand.duplicate() if rendered_round==game.round_no else []
+	entering_cards.clear()
+	for id in game.hand:
+		var found := previous.find(id)
+		entering_cards.append(found<0)
+		if found>=0:
+			previous.remove_at(found)
+	rendered_hand = game.hand.duplicate()
+	rendered_round = game.round_no
+	board = Arena.new()
+	board.session = game
+	board.font = font
+	board.selected = target_id
+	board.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	board.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	parent.add_child(board)
 	var top := HBoxContainer.new()
-	column.add_child(top)
+	board.add_child(top)
+	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	top.offset_left = 22
+	top.offset_right = -22
+	top.offset_top = 12
 	var title := label(top,"核心守卫" if game.encounter_kind=="boss" else ("精英遭遇" if game.encounter_kind=="elite" else "迷雾遭遇"),22,"e5d1ad")
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	label(top,"第 %d 回合 · 手牌 %d" % [game.round_no,game.hand.size()],17,"c8d2e3")
 	button(top,"行囊",show_bag)
 	button(top,"战斗记录",show_log)
-	board = Arena.new()
-	board.session = game
-	board.font = font
-	board.selected = target_id
 	if selected_card>=0 and selected_card<game.hand.size():
 		board.preview_card = game.hand[selected_card]
-	board.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	board.target_clicked.connect(on_target)
-	board.card_dropped.connect(func(index,id): selected_card=-1; finish_action(game.play_card(index,id)))
-	column.add_child(board)
+	board.card_dropped.connect(submit_card)
 	hand_dock = Control.new()
-	hand_dock.custom_minimum_size.y = 264
 	hand_dock.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	column.add_child(hand_dock)
+	board.add_child(hand_dock)
+	hand_dock.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	hand_dock.offset_top = -300
+	hand_dock.offset_bottom = -54
 	var hint := label(hand_dock,"手牌  /  点击选牌，或拖到敌人出牌；技能可直接点击或拖向角色。",14,"a8c8cc")
-	hint.position = Vector2(12,0)
+	hint.position = Vector2(24,-20)
+	hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	if selected_card>=0 and selected_card<game.hand.size():
 		hint.text = "已选择「%s」· 点击敌人 / Esc 取消" % Cards.DATA[game.hand[selected_card]].name
 	for i in range(game.hand.size()):
@@ -408,8 +462,8 @@ func combat(column: VBoxContainer) -> void:
 		var card: Dictionary = Cards.DATA[game.hand[i]]
 		var view := make_card(hand_dock,game.hand[i],func(): select_card(index),i,game.energy<int(card.cost) or game.player.hp<=int(card.get("hp_cost",0)))
 		hand_views.append(view)
-		view.hovered.connect(func(v): v.z_index=30; v.position.y=18)
-		view.unhovered.connect(func(v): v.z_index=10 if v.chosen else v.ordinal; arrange_hand())
+		view.hovered.connect(func(v): v.focus_hand(true))
+		view.unhovered.connect(func(v): v.focus_hand(false))
 	hand_dock.resized.connect(arrange_hand)
 	call_deferred("arrange_hand")
 	if game.hand.is_empty():
@@ -417,7 +471,12 @@ func combat(column: VBoxContainer) -> void:
 		empty.position = Vector2(320,100)
 	var actions := HBoxContainer.new()
 	actions.add_theme_constant_override("separation",10)
-	column.add_child(actions)
+	board.add_child(actions)
+	actions.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	actions.offset_left = 22
+	actions.offset_right = -22
+	actions.offset_top = -48
+	actions.offset_bottom = -10
 	label(actions,"%d / 3 能量" % game.energy,25,"83e0cf")
 	button(actions,"抽牌 %d" % game.draw_pile.size(),func(): var cards: Array=game.draw_pile.duplicate(); cards.sort(); show_pile("抽牌堆 · 不显示顺序",cards))
 	button(actions,"弃牌 %d" % game.discard_pile.size(),func(): show_pile("弃牌堆",game.discard_pile))
@@ -425,22 +484,36 @@ func combat(column: VBoxContainer) -> void:
 	var status_label := label(actions,"蓄势 +%d%%" % int(game.momentum*100) if game.momentum>0 else "1–9/0 选牌 · Esc 取消",14,"9caec0")
 	status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	button(actions,"疗伤药 ×%d" % game.potions,func(): selected_card=-1; finish_action(game.heal()),game.energy<1 or game.potions<1 or game.player.hp>=game.player.max_hp)
-	var end := button(actions,"结束回合 [空格]",func(): selected_card=-1; finish_action(game.end_turn()))
+	var end := button(actions,"结束回合 [空格]",end_combat_turn)
 	end.add_theme_stylebox_override("normal",box("70554a",8))
 
 func arrange_hand() -> void:
 	if hand_dock==null or not is_instance_valid(hand_dock) or hand_views.is_empty():
 		return
 	var count := hand_views.size()
-	var step := minf(190.0,(hand_dock.size.x-190)/maxf(1,count-1))
+	var step := minf(158.0,(hand_dock.size.x-260)/maxf(1,count-1))
 	var left := (hand_dock.size.x-(180+step*(count-1)))/2
 	for i in range(count):
-		var view: Control = hand_views[i]
+		var view = hand_views[i]
+		var fan := (float(i)-(count-1)*0.5)/maxf(1,(count-1)*0.5)
 		view.size = Vector2(180,230)
-		view.position = Vector2(left+step*i,24)
-		view.z_index = 10 if view.chosen else i
+		view.pivot_offset = Vector2(90,210)
+		view.rest_position = Vector2(left+step*i,5+absf(fan)*16)
+		view.rest_angle = fan*0.075
+		view.z_index = 20 if view.chosen else i
+		if not view.hand_placed:
+			view.hand_placed = true
+			if entering_cards[i]:
+				view.deal_in(Vector2(20,150),i*0.045)
+			else:
+				view.position = view.rest_position
+				view.rotation = view.rest_angle
+		else:
+			view.focus_hand(false)
 
 func select_card(index: int) -> void:
+	if combat_busy:
+		return
 	if index<0 or index>=game.hand.size():
 		return
 	var card: Dictionary = Cards.DATA[game.hand[index]]
@@ -449,16 +522,101 @@ func select_card(index: int) -> void:
 		refresh()
 	else:
 		selected_card = -1
-		finish_action(game.play_card(index))
+		submit_card(index,"")
 
 func on_target(id: String) -> void:
+	if combat_busy:
+		return
 	target_id = id
 	if selected_card>=0:
 		var index := selected_card
 		selected_card = -1
-		finish_action(game.play_card(index,id))
+		submit_card(index,id)
 	else:
 		refresh()
+
+
+func lock_combat(value: bool) -> void:
+	combat_busy = value
+	if value:
+		input_shield = Control.new()
+		input_shield.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		input_shield.mouse_filter = Control.MOUSE_FILTER_STOP
+		input_shield.z_index = 80
+		add_child(input_shield)
+	elif is_instance_valid(input_shield):
+		input_shield.queue_free()
+		input_shield = null
+
+func submit_card(index: int,id: String = "") -> void:
+	if combat_busy or index<0 or index>=game.hand.size():
+		return
+	var card_id: String = game.hand[index]
+	var origin: Vector2 = hand_views[index].global_position
+	var destination: Vector2 = board.global_position+Vector2(board.size.x*0.2,board.size.y*0.35)
+	for i in range(game.enemies.size()):
+		if game.enemies[i].id==id:
+			destination = board.global_position+board.enemy_center(i)
+	if not game.play_card(index,id):
+		finish_action(false)
+		return
+	lock_combat(true)
+	selected_card = -1
+	hand_views[index].hide()
+	var ghost := make_card(self,card_id,func(): pass)
+	ghost.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ghost.z_index = 90
+	ghost.position = origin
+	ghost.pivot_offset = Vector2(90,115)
+	var tween := ghost.create_tween().set_parallel(true)
+	tween.tween_property(ghost,"position",destination-Vector2(90,115),0.25).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	tween.tween_property(ghost,"scale",Vector2(0.3,0.3),0.25)
+	tween.tween_property(ghost,"rotation",0.25,0.25)
+	tween.tween_property(ghost,"modulate:a",0.15,0.25)
+	await tween.finished
+	ghost.queue_free()
+	finish_action(true)
+	impact_flash(destination,Color(Cards.DATA[card_id].color))
+	lock_combat(false)
+
+func impact_flash(point: Vector2,color: Color) -> void:
+	for i in range(8):
+		var spark := ColorRect.new()
+		spark.color = color
+		spark.size = Vector2(5,16)
+		spark.position = point
+		spark.rotation = i*TAU/8
+		spark.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		spark.z_index = 95
+		add_child(spark)
+		var tween := spark.create_tween().set_parallel(true)
+		tween.tween_property(spark,"position",point+Vector2.from_angle(i*TAU/8)*90,0.3).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tween.tween_property(spark,"modulate:a",0.0,0.3)
+		tween.chain().tween_callback(spark.queue_free)
+
+func end_combat_turn() -> void:
+	if combat_busy or game.phase!="combat":
+		return
+	lock_combat(true)
+	selected_card = -1
+	for view in hand_views:
+		view.discard_out(Vector2(hand_dock.size.x-70,120))
+	await get_tree().create_timer(0.23).timeout
+	var success := game.end_turn()
+	finish_action(success)
+	if success and game.phase=="combat":
+		var banner := label(self,"第 %d 回合" % game.round_no,32,"e9d2aa")
+		banner.z_index = 90
+		banner.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		banner.position = board.global_position+Vector2(board.size.x*0.45,board.size.y*0.2)
+		banner.modulate.a = 0
+		var tween := banner.create_tween()
+		tween.tween_property(banner,"modulate:a",1.0,0.12)
+		tween.tween_interval(0.35)
+		tween.tween_property(banner,"modulate:a",0.0,0.18)
+		tween.tween_callback(banner.queue_free)
+	await get_tree().create_timer(0.4).timeout
+	lock_combat(false)
 
 func show_log() -> void:
 	var dialog := AcceptDialog.new()
@@ -626,6 +784,8 @@ func confirm_sell(item: Dictionary,items: Array) -> void:
 	dialog.popup_centered(Vector2i(420,180))
 
 func _unhandled_key_input(event: InputEvent) -> void:
+	if combat_busy:
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_R and game.phase != "combat":
 			var item := selected_item()
@@ -635,7 +795,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		if game.phase == "combat":
 			if event.keycode == KEY_SPACE:
 				selected_card = -1
-				finish_action(game.end_turn())
+				end_combat_turn()
 			elif event.keycode == KEY_ESCAPE:
 				selected_card = -1
 				refresh()
