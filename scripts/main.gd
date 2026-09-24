@@ -608,7 +608,7 @@ func end_combat_turn() -> void:
 		var banner := label(self,"第 %d 回合" % game.round_no,32,"e9d2aa")
 		banner.z_index = 90
 		banner.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		banner.position = board.global_position+Vector2(board.size.x*0.45,board.size.y*0.2)
+		banner.position = body.global_position+Vector2(body.size.x*0.45,body.size.y*0.2)
 		banner.modulate.a = 0
 		var tween := banner.create_tween()
 		tween.tween_property(banner,"modulate:a",1.0,0.12)
