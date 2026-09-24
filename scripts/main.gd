@@ -16,7 +16,11 @@ var selected_container := "bag"
 var target_id := ""
 var selected_card := -1
 var camp_tab := "出征"
-var log_open := false
+var map_mode := "探索"
+var craft_id := ""
+var hand_views: Array = []
+var hand_dock: Control
+var build_version := "0.2.dev"
 var board: Control
 var item_details: RichTextLabel
 var item_buttons: HBoxContainer
@@ -30,6 +34,10 @@ func _ready() -> void:
 	if OS.has_feature("launcher") or "--launcher-smoke" in OS.get_cmdline_user_args():
 		get_tree().call_deferred("change_scene_to_file","res://launcher/launcher.tscn")
 		return
+	if FileAccess.file_exists("res://data/build.json"):
+		var info: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://data/build.json"))
+		if info is Dictionary:
+			build_version = str(info.get("version",build_version))
 	font = load("res://assets/fonts/DungeonSans.ttf")
 	var theme_value := Theme.new()
 	theme_value.default_font = font
@@ -47,16 +55,17 @@ func _ready() -> void:
 	game.load_game()
 	if "--capture" in OS.get_cmdline_user_args() or "--smoke" in OS.get_cmdline_user_args():
 		game = Session.new(23)
+		game.save_path = "user://ui-test-profile.json"
 	var margin := MarginContainer.new()
 	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	for edge in ["left","right","top","bottom"]:
-		margin.add_theme_constant_override("margin_"+edge,22)
+		margin.add_theme_constant_override("margin_"+edge,16)
 	add_child(margin)
 	var page := VBoxContainer.new()
-	page.add_theme_constant_override("separation",14)
+	page.add_theme_constant_override("separation",10)
 	margin.add_child(page)
 	var header := HBoxContainer.new()
-	header.custom_minimum_size.y = 55
+	header.custom_minimum_size.y = 50
 	page.add_child(header)
 	var title_column := VBoxContainer.new()
 	title_column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -70,7 +79,7 @@ func _ready() -> void:
 	page.add_child(body)
 	var footer_panel := PanelContainer.new()
 	footer_panel.add_theme_stylebox_override("panel",box("0e1b28",10))
-	footer_panel.custom_minimum_size.y = 65
+	footer_panel.custom_minimum_size.y = 42
 	page.add_child(footer_panel)
 	footer = RichTextLabel.new()
 	footer.bbcode_enabled = true
@@ -80,50 +89,76 @@ func _ready() -> void:
 	footer_panel.add_child(footer)
 	refresh()
 	if "--capture" in OS.get_cmdline_user_args():
-		await capture_screen("camp")
-		camp_tab = "仓库"
-		refresh()
-		await capture_screen("warehouse")
-		camp_tab = "牌组"
-		refresh()
-		await capture_screen("deck")
+		for tab in ["出征","仓库","商店","工坊","抽奖","牌组"]:
+			camp_tab = tab
+			refresh()
+			await capture_screen({"出征":"camp","仓库":"warehouse","商店":"shop","工坊":"workshop","抽奖":"draw","牌组":"deck"}[tab])
 		game.start_run()
+		game.reveal_tile(1)
+		refresh()
+		await capture_screen("explore")
+		game.start_encounter()
 		refresh()
 		await capture_screen("combat")
 		selected_card = game.hand.find("strike")
 		refresh()
 		await capture_screen("targeting")
-		show_pile("抽牌堆",game.draw_pile)
-		await capture_screen("pile")
-		for child in get_children():
-			if child is AcceptDialog:
-				child.queue_free()
-		game.phase = "loot"
-		game.pending_loot = [game.make_item(0,3),game.make_item(3,2)]
-		game.card_rewards = ["reap","bastion","echo"]
+		game.draw_cards(10)
 		refresh()
-		await capture_screen("loot")
+		await capture_screen("hand-ten")
+		get_window().size = Vector2i(1280,720)
+		await capture_screen("combat-720p")
+		get_window().size = Vector2i(960,600)
+		await capture_screen("combat-small")
 		print("CAPTURE_OK")
 		get_tree().quit()
 	if "--smoke" in OS.get_cmdline_user_args():
 		game.start_run()
-		for test_phase in ["combat","event","loot","exit","camp"]:
+		refresh()
+		await settle_layout("explore")
+		game.start_encounter()
+		refresh()
+		await settle_layout("combat")
+		# Drive the actual card signal and arena drop handler, not only the rule API.
+		var attack_index := -1
+		for i in range(game.hand.size()):
+			if Cards.DATA[game.hand[i]].has("attack") and Cards.DATA[game.hand[i]].cost<=game.energy:
+				attack_index = i
+				break
+		if attack_index>=0:
+			var count_before := game.hand.size()
+			hand_views[attack_index].pressed.emit()
+			if selected_card!=attack_index:
+				push_error("Card click did not select attack")
+			var drag := {"kind":"card","index":attack_index,"id":game.hand[attack_index],"turn":game.round_no}
+			board._drop_data(board.enemy_center(0),drag)
+			if game.hand.size()!=count_before-1+int(Cards.DATA[drag.id].get("draw",0)):
+				push_error("Drag-to-enemy did not play card")
+		game.draw_cards(10)
+		refresh()
+		for dimensions in [Vector2i(1440,900),Vector2i(1280,720),Vector2i(960,600)]:
+			get_window().size = dimensions
+			await settle_layout("combat-resize")
+		get_window().size = Vector2i(1440,900)
+		for test_phase in ["event","loot","exit","camp"]:
 			game.phase = test_phase
-			if test_phase == "loot":
+			if test_phase=="loot":
 				game.pending_loot = [game.make_item(0,3),game.make_item(3,2)]
 				game.card_rewards = ["reap","bastion","echo"]
 			refresh()
-			await get_tree().process_frame
-			await get_tree().process_frame
-			check_layout(test_phase)
-		for tab in ["出征","仓库","牌组"]:
+			await settle_layout(test_phase)
+		for tab in ["出征","仓库","商店","工坊","抽奖","牌组"]:
 			camp_tab = tab
 			refresh()
-			await get_tree().process_frame
-			await get_tree().process_frame
-			check_layout(tab)
+			await settle_layout(tab)
 		print("UI_SMOKE_OK")
 		get_tree().quit()
+
+func settle_layout(name_value: String) -> void:
+	await get_tree().process_frame
+	await get_tree().process_frame
+	await get_tree().process_frame
+	check_layout(name_value)
 
 func capture_screen(name_value: String) -> void:
 	await get_tree().create_timer(0.4).timeout
@@ -132,8 +167,14 @@ func capture_screen(name_value: String) -> void:
 
 func check_layout(phase_name: String) -> void:
 	var rect := body.get_global_rect()
-	if rect.end.y > get_viewport_rect().size.y-65 or rect.end.x > get_viewport_rect().size.x:
+	if rect.end.y > get_viewport_rect().size.y-42 or rect.end.x > get_viewport_rect().size.x:
 		push_error("Interface exceeds viewport: "+phase_name+" "+str(rect))
+	if game.phase=="combat":
+		if hand_views.size()!=game.hand.size():
+			push_error("Missing hand controls")
+		for view in hand_views:
+			if not view.is_visible_in_tree() or view.size.x<100 or not get_viewport_rect().encloses(view.get_global_rect()):
+				push_error("Card is hidden or offscreen: "+phase_name)
 
 func box(hex: String, radius: int = 12) -> StyleBoxFlat:
 	var result := StyleBoxFlat.new()
@@ -185,11 +226,13 @@ func clear(parent: Node) -> void:
 		child.queue_free()
 
 func refresh() -> void:
+	hand_views.clear()
+	hand_dock = null
 	clear(body)
 	board = null
 	bag_view = null
 	stash_view = null
-	header_stats.text = "%s   /   金币 %d   /   本局 %d" % ["营地" if game.phase == "camp" else "探索中",game.gold,game.run_gold]
+	header_stats.text = "v%s  ·  %s   /   金币 %d   /   本局 %d" % [build_version,"营地" if game.phase == "camp" else "探索中",game.gold,game.run_gold]
 	item_details = null
 	item_buttons = null
 	if game.phase == "combat":
@@ -199,6 +242,7 @@ func refresh() -> void:
 		var left := panel(body,true)
 		match game.phase:
 			"camp": camp(left)
+			"explore": explore_room(left)
 			"loot": loot(left)
 			"event": event_room(left)
 			"exit": exit_room(left)
@@ -230,11 +274,25 @@ func camp(column: VBoxContainer) -> void:
 	var tabs := HBoxContainer.new()
 	tabs.add_theme_constant_override("separation",10)
 	column.add_child(tabs)
-	for tab in ["出征","仓库","牌组"]:
+	for tab in ["出征","仓库","商店","工坊","抽奖","牌组"]:
 		button(tabs,("● " if camp_tab==tab else "")+tab,func(): camp_tab=tab; refresh())
+	if camp_tab == "商店":
+		shop_room(column)
+		return
+	if camp_tab == "工坊":
+		craft_room(column)
+		return
+	if camp_tab == "抽奖":
+		draw_room(column)
+		return
 	if camp_tab == "仓库":
 		label(column,"遗物档案 / 仓库",25,"e9d2aa")
 		paragraph(column,"选择查看词条与估值；拖拽整理，R 旋转。右侧操作可穿戴、出售或转移。")
+		var tools_row := HBoxContainer.new()
+		column.add_child(tools_row)
+		button(tools_row,"全部入库",func(): finish_action(game.deposit_all()))
+		button(tools_row,"整理仓库",func(): finish_action(game.tidy_stash()))
+		button(tools_row,"前往交易",func(): camp_tab="商店"; refresh())
 		var scroll := ScrollContainer.new()
 		scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		column.add_child(scroll)
@@ -257,12 +315,12 @@ func camp(column: VBoxContainer) -> void:
 	var itinerary := HBoxContainer.new()
 	itinerary.add_theme_constant_override("separation",18)
 	column.add_child(itinerary)
-	for entry in [["01","入口遭遇"],["02","封印匣"],["03","核心守卫"],["04","带宝撤离"]]:
+	for entry in [["01","揭开迷雾"],["02","战斗寻宝"],["03","返回撤离"],["04","交易养成"]]:
 		var step := panel(itinerary,true)
 		label(step,entry[0],23,"68cdb9")
 		label(step,entry[1],15,"c6cfdc")
 	paragraph(column,"3 能量 · 每回合抽 5 张 · 可见敌人意图
-装备决定属性与专属卡牌；战后择牌、拾取装备，再决定是否深入。")
+探索7×5迷雾地图，数字提示危险；回营后交易、强化、抽奖和附魔。")
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation",14)
 	column.add_child(row)
@@ -270,7 +328,7 @@ func camp(column: VBoxContainer) -> void:
 	go.custom_minimum_size = Vector2(250,52)
 	go.add_theme_stylebox_override("normal",box("356b64",8))
 	var cost := 60 + int(game.equipment.weapon.level)*40
-	button(row,"强化武器 · %d 金币" % cost,func(): finish_action(game.upgrade_weapon()),game.gold<cost or game.equipment.weapon.level>=3)
+	button(row,"强化武器 · %d 金币" % cost,func(): finish_action(game.upgrade_weapon()),game.gold<cost or game.equipment.weapon.level>=5)
 
 func card_summary(id: String) -> String:
 	var card: Dictionary = Cards.DATA[id]
@@ -286,6 +344,7 @@ func make_card(parent: Node,id: String,action: Callable,index: int = -1,disabled
 	view.font = font
 	view.summary = card_summary(id)
 	view.ordinal = index+1
+	view.turn = game.round_no
 	view.chosen = index>=0 and index==selected_card
 	view.disabled = disabled_value
 	view.pressed.connect(action)
@@ -321,10 +380,9 @@ func show_pile(title_value: String,ids: Array) -> void:
 func combat(column: VBoxContainer) -> void:
 	var top := HBoxContainer.new()
 	column.add_child(top)
-	var title := label(top,"矿井入口" if game.room==0 else "封印核心",22,"e5d1ad")
+	var title := label(top,"核心守卫" if game.encounter_kind=="boss" else ("精英遭遇" if game.encounter_kind=="elite" else "迷雾遭遇"),22,"e5d1ad")
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	label(top,"第 %d 回合" % game.round_no,17,"c8d2e3")
-	button(top,"牌组 %d" % game.run_deck.size(),func(): show_pile("本次探索牌组",game.run_deck))
+	label(top,"第 %d 回合 · 手牌 %d" % [game.round_no,game.hand.size()],17,"c8d2e3")
 	button(top,"行囊",show_bag)
 	button(top,"战斗记录",show_log)
 	board = Arena.new()
@@ -335,41 +393,52 @@ func combat(column: VBoxContainer) -> void:
 		board.preview_card = game.hand[selected_card]
 	board.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	board.target_clicked.connect(on_target)
+	board.card_dropped.connect(func(index,id): selected_card=-1; finish_action(game.play_card(index,id)))
 	column.add_child(board)
-	var actions := HBoxContainer.new()
-	actions.add_theme_constant_override("separation",14)
-	column.add_child(actions)
-	var energy_label := label(actions,"%d / 3  能量" % game.energy,26,"83e0cf")
-	energy_label.custom_minimum_size.x = 160
-	var hint := label(actions,"选择攻击牌后点击敌人；技能牌直接生效。",15,"bcc8d9")
-	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hand_dock = Control.new()
+	hand_dock.custom_minimum_size.y = 264
+	hand_dock.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	column.add_child(hand_dock)
+	var hint := label(hand_dock,"手牌  /  点击选牌，或拖到敌人出牌；技能可直接点击或拖向角色。",14,"a8c8cc")
+	hint.position = Vector2(12,0)
 	if selected_card>=0 and selected_card<game.hand.size():
-		hint.text = "已选择「%s」· 点击敌人出牌 / Esc 取消" % Cards.DATA[game.hand[selected_card]].name
-	elif game.energy==0:
-		hint.text = "能量已用完，可使用 0 费牌或结束回合。"
-	if game.momentum>0:
-		hint.text += "  蓄势 +%d%%" % int(game.momentum*100)
-	button(actions,"疗伤药 ×%d" % game.potions,func(): selected_card=-1; finish_action(game.heal()),game.energy<1 or game.potions<1 or game.player.hp>=game.player.max_hp)
-	var end := button(actions,"结束回合  [空格]",func(): selected_card=-1; finish_action(game.end_turn()))
-	end.add_theme_stylebox_override("normal",box("70554a",8))
-	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size.y = 234
-	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	column.add_child(scroll)
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation",10)
-	scroll.add_child(row)
+		hint.text = "已选择「%s」· 点击敌人 / Esc 取消" % Cards.DATA[game.hand[selected_card]].name
 	for i in range(game.hand.size()):
 		var index := i
 		var card: Dictionary = Cards.DATA[game.hand[i]]
-		make_card(row,game.hand[i],func(): select_card(index),i,game.energy<int(card.cost) or game.player.hp<=int(card.get("hp_cost",0)))
-	var piles := HBoxContainer.new()
-	piles.add_theme_constant_override("separation",12)
-	column.add_child(piles)
-	button(piles,"抽牌堆 %d" % game.draw_pile.size(),func(): var cards: Array=game.draw_pile.duplicate(); cards.sort(); show_pile("抽牌堆 · 不显示顺序",cards))
-	button(piles,"弃牌堆 %d" % game.discard_pile.size(),func(): show_pile("弃牌堆",game.discard_pile))
-	button(piles,"消耗区 %d" % game.exhaust_pile.size(),func(): show_pile("消耗区 · 本场不再抽到",game.exhaust_pile))
-	label(piles,"快捷键 1–9 选牌 · Esc 取消 · 手牌上限 10",13,"7e96ac")
+		var view := make_card(hand_dock,game.hand[i],func(): select_card(index),i,game.energy<int(card.cost) or game.player.hp<=int(card.get("hp_cost",0)))
+		hand_views.append(view)
+		view.hovered.connect(func(v): v.z_index=30; v.position.y=18)
+		view.unhovered.connect(func(v): v.z_index=10 if v.chosen else v.ordinal; arrange_hand())
+	hand_dock.resized.connect(arrange_hand)
+	call_deferred("arrange_hand")
+	if game.hand.is_empty():
+		var empty := label(hand_dock,"手牌已打空。结束回合后重新抽牌。",22,"e6d6b6")
+		empty.position = Vector2(320,100)
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation",10)
+	column.add_child(actions)
+	label(actions,"%d / 3 能量" % game.energy,25,"83e0cf")
+	button(actions,"抽牌 %d" % game.draw_pile.size(),func(): var cards: Array=game.draw_pile.duplicate(); cards.sort(); show_pile("抽牌堆 · 不显示顺序",cards))
+	button(actions,"弃牌 %d" % game.discard_pile.size(),func(): show_pile("弃牌堆",game.discard_pile))
+	button(actions,"消耗 %d" % game.exhaust_pile.size(),func(): show_pile("消耗区",game.exhaust_pile))
+	var status_label := label(actions,"蓄势 +%d%%" % int(game.momentum*100) if game.momentum>0 else "1–9/0 选牌 · Esc 取消",14,"9caec0")
+	status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	button(actions,"疗伤药 ×%d" % game.potions,func(): selected_card=-1; finish_action(game.heal()),game.energy<1 or game.potions<1 or game.player.hp>=game.player.max_hp)
+	var end := button(actions,"结束回合 [空格]",func(): selected_card=-1; finish_action(game.end_turn()))
+	end.add_theme_stylebox_override("normal",box("70554a",8))
+
+func arrange_hand() -> void:
+	if hand_dock==null or not is_instance_valid(hand_dock) or hand_views.is_empty():
+		return
+	var count := hand_views.size()
+	var step := minf(190.0,(hand_dock.size.x-190)/maxf(1,count-1))
+	var left := (hand_dock.size.x-(180+step*(count-1)))/2
+	for i in range(count):
+		var view: Control = hand_views[i]
+		view.size = Vector2(180,230)
+		view.position = Vector2(left+step*i,24)
+		view.z_index = 10 if view.chosen else i
 
 func select_card(index: int) -> void:
 	if index<0 or index>=game.hand.size():
@@ -441,17 +510,17 @@ func loot(column: VBoxContainer) -> void:
 	var row := HBoxContainer.new()
 	column.add_child(row)
 	button(row,"继续探索  →",func(): finish_action(game.continue_route()))
-	button(row,"现在撤离 · 保住战利品",func(): finish_action(game.extract()))
+	button(row,"立即撤离" if game.can_extract() else "返回地图后可回入口撤离",func(): finish_action(game.extract()),not game.can_extract())
 
 func event_room(column: VBoxContainer) -> void:
 	label(column,"03 / 遗迹事件",13,"68cdb9")
 	label(column,"墙后，传来另一种心跳。",28,"e9d5b1")
 	paragraph(column,"裂开的符文墙中嵌着一只旧时代的匣子。你可以观察封印的规律，或以意志压制其中的回声。骰子只在作出选择后投掷。")
-	paragraph(column,"成功：获得一件稀有装备与25金币。失败：失去10生命（最低保留1点），事件仍然推进。每次探索只能检定一次。")
+	paragraph(column,"成功：获得一件稀有装备与25金币。失败：失去10生命（最低保留1点），事件仍然推进。每个祭坛只能检定一次。")
 	button(column,"观察封印 · 感知 %d%%" % game.player.perception,func(): finish_action(game.resolve_event("perception")))
 	button(column,"压制回声 · 意志 %d%%" % game.player.will,func(): finish_action(game.resolve_event("will")))
-	button(column,"放弃匣子，进入核心",func(): finish_action(game.resolve_event("leave")))
-	button(column,"撤离",func(): finish_action(game.extract()))
+	button(column,"放弃匣子，继续探索",func(): finish_action(game.resolve_event("leave")))
+	button(column,"撤离",func(): finish_action(game.extract()),not game.can_extract())
 
 func exit_room(column: VBoxContainer) -> void:
 	label(column,"05 / 返回地面",13,"68cdb9")
@@ -513,8 +582,12 @@ func item_description(item: Dictionary) -> String:
 		if item.has(key):
 			var names := {"attack":"攻击","defense":"防御","hp":"生命"}
 			text_value += "%s +%d  " % [names[key],int(item[key])+int(item.level)*2]
-	for affix in item.affixes:
+	for affix in item.affixes + ([item.enchantment] if item.has("enchantment") else []):
 		text_value += "\n%s%s" % [affix.label,"" if affix.key=="shadowstep" else " +%d" % affix.value]
+	if item.has("enchantment"):
+		text_value += "\n附魔槽已激活"
+	if item.get("locked",false):
+		text_value += "  · 已锁定"
 	return text_value
 
 func refresh_selection() -> void:
@@ -537,7 +610,8 @@ func refresh_selection() -> void:
 	var bounds: Vector2i = Session.BAG if selected_container=="bag" else Session.STASH
 	button(item_buttons,"旋转",func(): finish_action(Inventory.move(items,selection,Vector2i(int(item.x),int(item.y)),bounds,true)),game.phase=="combat")
 	button(item_buttons,"装备",func(): finish_action(game.equip_item(selection,items)),game.phase!="camp")
-	button(item_buttons,"出售",func(): confirm_sell(item,items),game.phase!="camp")
+	button(item_buttons,"出售",func(): confirm_sell(item,items),game.phase!="camp" or item.get("locked",false))
+	button(item_buttons,"锁定" if not item.get("locked",false) else "解锁",func(): finish_action(game.toggle_lock(item.id)),game.phase!="camp")
 	button(item_buttons,"转移",func(): finish_action(Inventory.transfer(items,game.stash if selected_container=="bag" else game.bag,selection,Session.STASH if selected_container=="bag" else Session.BAG)),game.phase!="camp")
 
 func confirm_sell(item: Dictionary,items: Array) -> void:
@@ -569,3 +643,158 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				select_card(event.keycode-KEY_1)
 			elif event.keycode==KEY_0:
 				select_card(9)
+
+func scrolling_column(parent: Node) -> VBoxContainer:
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	parent.add_child(scroll)
+	var column := VBoxContainer.new()
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	column.add_theme_constant_override("separation",12)
+	scroll.add_child(column)
+	return column
+
+func shop_room(column: VBoxContainer) -> void:
+	label(column,"遗物交易所",29,"e9d2aa")
+	paragraph(column,"基础装备直接购买后入库；出售背包或仓库中的战利品，供养强化与附魔。锁定装备不会被出售。")
+	var content := scrolling_column(column)
+	label(content,"购买基础装备",18,"81cdbb")
+	for i in range(game.catalog.bases.size()):
+		var index := i
+		var item: Dictionary = game.catalog.bases[i]
+		var row := HBoxContainer.new()
+		content.add_child(row)
+		var title := label(row,"%s  ·  %d×%d  ·  购入 %d / 售出 %d" % [item.name,item.w,item.h,game.shop_price(i),item.value],17)
+		title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button(row,"购买入库",func(): finish_action(game.shop_buy(index)),game.gold<game.shop_price(i))
+	label(content,"出售战利品 / 按每格价值比较",18,"e9d2aa")
+	var owned: Array = game.bag+game.stash
+	owned.sort_custom(func(a,b): return float(a.value)/(a.w*a.h)>float(b.value)/(b.w*b.h))
+	if owned.is_empty():
+		paragraph(content,"暂无待售装备。下地城找到宝箱或击败敌人，撤离后即可交易。")
+	for item in owned:
+		var source: Array = game.bag if game.bag.has(item) else game.stash
+		var row := HBoxContainer.new()
+		content.add_child(row)
+		var title := label(row,"%s%s +%d · %d金币 / %.1f每格" % ["锁定 · " if item.get("locked",false) else "",item.name,item.level,item.value,float(item.value)/(item.w*item.h)],15,str(game.catalog.rarities[int(item.rarity)].color))
+		title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button(row,"详情",func(): selection=item.id; selected_container="bag" if is_same(source,game.bag) else "stash"; refresh_selection())
+		button(row,"出售",func(): confirm_sell(item,source),item.get("locked",false))
+
+func craft_room(column: VBoxContainer) -> void:
+	label(column,"工坊 / 强化与附魔",29,"e9d2aa")
+	paragraph(column,"强化提升装备基础属性，最高+5；附魔使用一个独立词条槽，再次附魔会替换该槽，保留原有掉落词条。")
+	if game.owned_item(craft_id).is_empty():
+		craft_id = game.equipment.weapon.id
+	var picker := OptionButton.new()
+	picker.custom_minimum_size.y = 40
+	column.add_child(picker)
+	var owned: Array = game.equipment.values()+game.bag+game.stash
+	for i in range(owned.size()):
+		picker.add_item("%s +%d%s" % [owned[i].name,owned[i].level," · 已装备" if game.equipment.values().has(owned[i]) else ""])
+		if str(owned[i].id)==craft_id:
+			picker.select(i)
+	picker.item_selected.connect(func(i): craft_id=owned[i].id; refresh())
+	var item := game.owned_item(craft_id)
+	var details := panel(column)
+	label(details,item.name+" +%d" % item.level,24,str(game.catalog.rarities[int(item.rarity)].color))
+	paragraph(details,item_description(item),"ccd7e1")
+	label(column,"强化 · 每级基础攻击／防御／生命 +2",18,"81cdbb")
+	button(column,"强化至 +%d · %d金币" % [int(item.level)+1,game.upgrade_cost(item)],func(): finish_action(game.upgrade_item(craft_id)),game.gold<game.upgrade_cost(item) or item.level>=5)
+	label(column,"附魔槽 · "+(str(item.enchantment.label)+" +%d" % item.enchantment.value if item.has("enchantment") else "尚未激活"),18,"c4a5ef")
+	paragraph(column,"随机生成一个经典RPG词条，可能获得影步技能。重铸时排除当前附魔种类；费用每次增加40金币。附魔不提高商人回收价。")
+	button(column,"%s · %d金币" % ["重铸附魔" if item.has("enchantment") else "附魔",game.enchant_cost(item)],func(): confirm_enchant(item),game.gold<game.enchant_cost(item))
+	paragraph(column,"可抽取：攻击、防御、生命、敏捷、速度、移动力、暴击、暴伤、破甲、韧性、感知、意志、流血、影步。")
+
+func confirm_enchant(item: Dictionary) -> void:
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "确认附魔"
+	dialog.dialog_text = "花费%d金币为「%s」生成随机附魔？\n%s" % [game.enchant_cost(item),item.name,"现有附魔将被替换，原掉落词条保留。" if item.has("enchantment") else "新增一个独立附魔词条。"]
+	dialog.ok_button_text = "确认附魔"
+	dialog.cancel_button_text = "取消"
+	add_child(dialog)
+	dialog.confirmed.connect(func(): finish_action(game.enchant_item(item.id)); dialog.queue_free())
+	dialog.canceled.connect(dialog.queue_free)
+	dialog.popup_centered(Vector2i(500,200))
+
+func draw_room(column: VBoxContainer) -> void:
+	label(column,"遗物寻宝 / 装备抽奖",29,"e9d2aa")
+	paragraph(column,"使用探索和交易赚取的游戏金币。获得的装备自动存入仓库，可以穿戴、出售、强化或附魔。")
+	var banner := panel(column)
+	label(banner,"120 金币 / 次",30,"e9d2aa")
+	label(banner,"普通 55% · 魔法 30% · 稀有 13% · 史诗 2%",19,"bdabdc")
+	paragraph(banner,"四种装备底材等概率。连续9次未获得稀有或史诗，第10次至少稀有；获得稀有或史诗后重置计数。")
+	label(banner,"保底进度  %d / 9" % game.draw_pity,23,"83e0cf")
+	var bar := ProgressBar.new()
+	bar.max_value = 9
+	bar.value = game.draw_pity
+	bar.show_percentage = false
+	banner.add_child(bar)
+	button(banner,"抽取一次 · 120金币",func(): finish_action(game.draw_equipment()),game.gold<Session.DRAW_COST)
+	button(banner,"查看仓库",func(): camp_tab="仓库"; refresh())
+	var history := scrolling_column(column)
+	label(history,"最近获得",18,"b5cbd6")
+	if game.draw_history.is_empty():
+		paragraph(history,"还没有抽取记录。空间不足时不会扣款或消耗保底。")
+	for entry in game.draw_history:
+		label(history,"%s · %s" % [game.catalog.rarities[int(entry.rarity)].name,entry.name],18,str(game.catalog.rarities[int(entry.rarity)].color))
+
+func explore_room(column: VBoxContainer) -> void:
+	label(column,"封印矿井 / 迷雾探索",27,"e9d2aa")
+	paragraph(column,"亮边格可探索；数字表示周围八格最初的战斗或陷阱数量。右键插旗，零危险通道会自动展开。")
+	var controls := HBoxContainer.new()
+	controls.add_theme_constant_override("separation",10)
+	column.add_child(controls)
+	for mode in ["探索","标记","侦察"]:
+		button(controls,("● " if map_mode==mode else "")+mode,func(): map_mode=mode; refresh(),mode=="侦察" and game.scouts<=0)
+	label(controls,"侦察剩余 %d" % game.scouts,17,"83e0cf")
+	var area := CenterContainer.new()
+	area.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_child(area)
+	var grid := GridContainer.new()
+	grid.columns = Session.Dungeon.WIDTH
+	grid.add_theme_constant_override("h_separation",8)
+	grid.add_theme_constant_override("v_separation",8)
+	area.add_child(grid)
+	for i in range(game.dungeon.size()):
+		var index := i
+		var tile: Dictionary = game.dungeon[i]
+		var seen: bool = tile.seen
+		var accessible: bool = Session.Dungeon.accessible(game.dungeon,i)
+		var name_value := "迷雾"
+		if seen or tile.scouted:
+			name_value = Session.Dungeon.TITLES[tile.kind]
+		if tile.flag:
+			name_value = "! 标记"
+		elif seen and tile.kind=="empty":
+			name_value = str(Session.Dungeon.danger(game.dungeon,i))
+		elif seen and tile.cleared and tile.kind!="entrance":
+			name_value += "\n已清理"
+		if i==game.map_position:
+			name_value = "● "+name_value
+		var cell := button(grid,name_value,func(): map_click(index))
+		cell.custom_minimum_size = Vector2(86,68)
+		cell.add_theme_font_size_override("font_size",17)
+		cell.tooltip_text = "已侦察，进入后才触发" if tile.scouted and not seen else ("可以抵达" if accessible else "先探索相邻区域")
+		var bg := "243948" if seen else ("192d3a" if accessible else "101923")
+		var style := box(bg,7)
+		style.border_color = Color("87d8c5") if i==game.map_position else Color("466677")
+		style.set_border_width_all(2 if accessible and not seen or i==game.map_position else 0)
+		cell.add_theme_stylebox_override("normal",style)
+		cell.gui_input.connect(func(event):
+			if event is InputEventMouseButton and event.pressed and event.button_index==MOUSE_BUTTON_RIGHT:
+				finish_action(game.flag_tile(index)))
+	var route := HBoxContainer.new()
+	route.add_theme_constant_override("separation",12)
+	column.add_child(route)
+	button(route,"返回入口",func(): finish_action(game.reveal_tile(0)))
+	button(route,"撤离结算 · %d金币" % game.run_gold,func(): finish_action(game.extract()),not game.can_extract())
+	paragraph(column,"宝箱：装备与金币 · 营火：恢复生命 · 事件：属性检定\n核心守卫位于右下角。可以随时回入口撤离；未撤离的本局收益仍有风险。")
+
+func map_click(index: int) -> void:
+	match map_mode:
+		"标记": finish_action(game.flag_tile(index))
+		"侦察": finish_action(game.scout_tile(index))
+		_: finish_action(game.reveal_tile(index))

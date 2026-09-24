@@ -71,3 +71,28 @@ static func validate(items: Array, bounds: Vector2i) -> bool:
 		if not fits(items,item,Vector2i(int(item.x),int(item.y)),bounds,str(item.id)):
 			return false
 	return true
+
+static func sort_items(items: Array,bounds: Vector2i) -> bool:
+	var ordered := items.duplicate(true)
+	ordered.sort_custom(func(a,b): return int(a.w)*int(a.h)>int(b.w)*int(b.h))
+	var placed: Array = []
+	for item in ordered:
+		if not add(placed,item,bounds):
+			var old_width: int = item.w
+			item.w = item.h
+			item.h = old_width
+			if not add(placed,item,bounds):
+				return false
+	items.clear()
+	items.append_array(placed)
+	return true
+
+static func transfer_all(source: Array,target: Array,bounds: Vector2i) -> bool:
+	var staged := target.duplicate(true)
+	for item in source:
+		if not add(staged,item.duplicate(true),bounds):
+			return false
+	target.clear()
+	target.append_array(staged)
+	source.clear()
+	return true

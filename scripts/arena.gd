@@ -1,5 +1,6 @@
 extends Control
 signal target_clicked(id: String)
+signal card_dropped(index: int,id: String)
 var session: RefCounted
 var font: Font
 var selected := ""
@@ -11,7 +12,7 @@ var preview_card := ""
 const Cards = preload("res://scripts/cards.gd")
 
 func _ready() -> void:
-	custom_minimum_size = Vector2(680,285)
+	custom_minimum_size = Vector2(680,270)
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	clip_contents = true
 
@@ -99,3 +100,27 @@ func _draw() -> void:
 			text_at(center+Vector2(0,-25-(1-pulse)*38),"-%d" % session.last_result.get("damage",0),Color(1,0.87,0.65,pulse),28)
 	if pulse>0 and session.last_result.get("kind","")=="enemy_turn":
 		text_at(hero+Vector2(0,-100-(1-pulse)*35),"-%d" % session.last_result.get("damage",0),Color(1,0.52,0.51,pulse),28)
+
+func _can_drop_data(point: Vector2,data: Variant) -> bool:
+	if not data is Dictionary or data.get("kind","")!="card" or session.phase!="combat" or data.get("turn",-1)!=session.round_no:
+		return false
+	var index := int(data.get("index",-1))
+	if index<0 or index>=session.hand.size() or session.hand[index]!=data.get("id",""):
+		return false
+	if not Cards.DATA[data.id].has("attack"):
+		return point.x<size.x*0.42
+	for i in range(session.enemies.size()):
+		if session.enemies[i].hp>0 and Rect2(enemy_center(i)-Vector2(95,140),Vector2(190,280)).has_point(point):
+			return true
+	return false
+
+func _drop_data(point: Vector2,data: Variant) -> void:
+	if not _can_drop_data(point,data):
+		return
+	var id := ""
+	if Cards.DATA[data.id].has("attack"):
+		for i in range(session.enemies.size()):
+			if session.enemies[i].hp>0 and Rect2(enemy_center(i)-Vector2(95,140),Vector2(190,280)).has_point(point):
+				id = session.enemies[i].id
+				break
+	card_dropped.emit(int(data.index),id)

@@ -5,8 +5,17 @@ const BOARD := Vector2i(8,6)
 const BAG := Vector2i(6,5)
 const STASH := Vector2i(10,8)
 const DIRECTIONS := [Vector2i.LEFT,Vector2i.RIGHT,Vector2i.UP,Vector2i.DOWN]
-const SAVE_VERSION := 2
+const SAVE_VERSION := 3
+const Dungeon = preload("res://scripts/dungeon.gd")
+const DRAW_COST := 120
 const Cards = preload("res://scripts/cards.gd")
+
+var dungeon: Array = []
+var map_position := 0
+var encounter_kind := "combat"
+var scouts := 2
+var draw_pity := 0
+var draw_history: Array = []
 
 var run_deck: Array = []
 var draw_pile: Array = []
@@ -98,7 +107,7 @@ func build_player() -> Dictionary:
 		for key in ["attack","defense","hp"]:
 			if item.has(key):
 				stats[key] += int(item[key]) + int(item.level)*2
-		for affix in item.affixes:
+		for affix in item.affixes + ([item.enchantment] if item.has("enchantment") else []):
 			if stats.has(affix.key):
 				stats[affix.key] += int(affix.value)
 	stats.max_hp = stats.hp
@@ -118,7 +127,12 @@ func start_run() -> bool:
 	pending_loot.clear()
 	run_deck = starting_deck()
 	card_rewards.clear()
-	start_encounter()
+	dungeon = Dungeon.generate(rng)
+	map_position = 0
+	scouts = clampi(1+int(player.perception/50),1,3)
+	phase = "explore"
+	player_turn = false
+	note("抵达入口。点击亮边迷雾探路；数字代表周围八格最初的危险数量。")
 	return true
 
 func starting_deck() -> Array:
@@ -156,12 +170,15 @@ func start_encounter() -> void:
 	walls.clear()
 	turn_queue.clear()
 	enemies.clear()
-	if room == 0:
+	if encounter_kind == "combat":
 		enemies.append(enemy("watcher","铜壳守卫",Vector2i(5,2),46,11,8,8))
 		enemies.append(enemy("crawler","裂隙猎犬",Vector2i(6,4),32,9,3,14))
 	else:
 		enemies.append(enemy("warden","遗迹监守者",Vector2i(6,2),85,15,18,9))
 		enemies.append(enemy("drone","符文浮游机",Vector2i(5,3),28,10,4,11))
+	if encounter_kind == "elite":
+		enemies[0].hp = 65
+		enemies[0].max_hp = 65
 	if run_deck.is_empty():
 		run_deck = starting_deck()
 	draw_pile = run_deck.duplicate()
@@ -376,7 +393,9 @@ func check_battle() -> void:
 	card_rewards = Cards.REWARDS.duplicate()
 	shuffle_cards(card_rewards)
 	card_rewards = card_rewards.slice(0,3) if room == 0 else []
-	after_loot = "event" if room == 0 else "exit"
+	after_loot = "explore" if not dungeon.is_empty() else ("event" if room == 0 else "exit")
+	if not dungeon.is_empty():
+		dungeon[map_position].cleared = true
 	phase = "loot"
 	player_turn = false
 	note("战斗胜利。选择值得带走的装备，再决定深入或撤离。")
@@ -400,6 +419,7 @@ func continue_route() -> bool:
 		phase = after_loot
 		if phase == "next_battle":
 			room = 1
+			encounter_kind = "boss"
 			start_encounter()
 		return true
 	return false
@@ -412,8 +432,13 @@ func resolve_event(choice: String) -> bool:
 	event_used = true
 	card_rewards.clear()
 	if choice == "leave":
-		room = 1
-		start_encounter()
+		if not dungeon.is_empty():
+			dungeon[map_position].cleared = true
+			phase = "explore"
+		else:
+			room = 1
+			encounter_kind = "boss"
+			start_encounter()
 		return true
 	var roll := rng.randi_range(1,100)
 	var outcome := Rules.event_check(int(player[choice]),roll)
@@ -426,13 +451,17 @@ func resolve_event(choice: String) -> bool:
 		player.hp = maxi(1,int(player.hp)-10)
 		pending_loot = []
 		note("符文反噬：失去10生命。你仍可继续探索或撤离。")
-	after_loot = "next_battle"
+	after_loot = "explore" if not dungeon.is_empty() else "next_battle"
+	if not dungeon.is_empty():
+		dungeon[map_position].cleared = true
 	phase = "loot"
 	return true
 
 func extract() -> bool:
-	if phase not in ["loot","event","exit"]:
+	if phase not in ["loot","event","exit","explore"]:
 		return fail("战斗中无法直接撤离。")
+	if not dungeon.is_empty() and not can_extract():
+		return fail("请先返回入口，或击败核心后在核心撤离。")
 	card_rewards.clear()
 	gold += run_gold
 	note("撤离成功：带回%d金币和背包中的装备。" % run_gold)
@@ -470,29 +499,183 @@ func sell_item(id: String, source: Array) -> bool:
 		return fail("请回营地出售装备。")
 	for i in range(source.size()):
 		if source[i].id == id:
+			if source[i].get("locked",false):
+				return fail("装备已锁定，请先解锁。")
 			gold += int(source[i].value)
 			note("出售 %s，获得%d金币。" % [source[i].name,source[i].value])
 			source.remove_at(i)
 			return true
 	return false
 
-func upgrade_weapon() -> bool:
-	if phase != "camp" or not equipment.has("weapon"):
-		return false
-	var item: Dictionary = equipment.weapon
-	var cost := 60 + int(item.level)*40
-	if item.level >= 3:
-		return fail("原型强化上限为+3。")
-	if gold < cost:
+func owned_item(id: String) -> Dictionary:
+	for item in equipment.values()+bag+stash:
+		if str(item.id)==id:
+			return item
+	return {}
+
+func upgrade_cost(item: Dictionary) -> int:
+	return 60+int(item.level)*40
+
+func enchant_cost(item: Dictionary) -> int:
+	return 80+int(item.get("enchant_count",0))*40
+
+func upgrade_item(id: String) -> bool:
+	var item := owned_item(id)
+	if phase!="camp" or item.is_empty():
+		return fail("请在营地选择自己的装备。")
+	if int(item.level)>=5:
+		return fail("强化已达到+5。")
+	var cost := upgrade_cost(item)
+	if gold<cost:
 		return fail("强化需要%d金币。" % cost)
 	gold -= cost
 	item.level += 1
 	player = build_player()
-	note("强化成功：%s +%d，花费%d金币。" % [item.name,item.level,cost])
+	note("%s强化至+%d，花费%d金币。" % [item.name,item.level,cost])
+	return true
+
+func upgrade_weapon() -> bool:
+	return upgrade_item(str(equipment.weapon.id))
+
+func enchant_item(id: String) -> bool:
+	var item := owned_item(id)
+	if phase!="camp" or item.is_empty():
+		return fail("请在营地选择自己的装备。")
+	var cost := enchant_cost(item)
+	if gold<cost:
+		return fail("附魔需要%d金币。" % cost)
+	var pool: Array = catalog.affixes.duplicate(true)
+	if item.has("enchantment"):
+		pool = pool.filter(func(a): return a.key!=item.enchantment.key)
+	var affix: Dictionary = pool[rng.randi_range(0,pool.size()-1)]
+	gold -= cost
+	item.enchantment = {"key":affix.key,"label":affix.label,"value":rng.randi_range(int(affix.min),int(affix.max))}
+	item.enchant_count = int(item.get("enchant_count",0))+1
+	player = build_player()
+	note("附魔完成：%s获得%s +%d。" % [item.name,affix.label,item.enchantment.value])
+	return true
+
+func shop_price(base_index: int) -> int:
+	return ceili(float(catalog.bases[base_index].value)*1.25)
+
+func shop_buy(base_index: int) -> bool:
+	if phase!="camp" or base_index<0 or base_index>=catalog.bases.size():
+		return fail("当前不能购买。")
+	var cost := shop_price(base_index)
+	if gold<cost:
+		return fail("金币不足。")
+	if Inventory.first_fit(stash,catalog.bases[base_index],STASH).x<0:
+		return fail("仓库空间不足，请先整理。")
+	var item := make_item(base_index,0)
+	Inventory.add(stash,item,STASH)
+	gold -= cost
+	note("购入%s，花费%d金币，已放入仓库。" % [item.name,cost])
+	return true
+
+func draw_equipment() -> bool:
+	if phase!="camp" or gold<DRAW_COST:
+		return fail("遗物抽奖需要%d金币，仅营地开放。" % DRAW_COST)
+	for base in catalog.bases:
+		if Inventory.first_fit(stash,base,STASH).x<0:
+			return fail("请先为可能获得的装备腾出仓库空间（最大2×3）。")
+	var roll := rng.randi_range(1,100)
+	var rarity := 0 if roll<=55 else (1 if roll<=85 else (2 if roll<=98 else 3))
+	if draw_pity>=9:
+		rarity = maxi(2,rarity)
+	var item := make_item(-1,rarity)
+	Inventory.add(stash,item,STASH)
+	gold -= DRAW_COST
+	draw_pity = 0 if rarity>=2 else draw_pity+1
+	draw_history.push_front({"name":item.name,"rarity":rarity,"id":item.id})
+	draw_history = draw_history.slice(0,8)
+	note("遗物抽奖：%s · %s，已入库。" % [catalog.rarities[rarity].name,item.name])
+	return true
+
+func toggle_lock(id: String) -> bool:
+	var item := owned_item(id)
+	if phase!="camp" or item.is_empty():
+		return false
+	item.locked = not item.get("locked",false)
+	return true
+
+func tidy_stash() -> bool:
+	if phase!="camp":
+		return false
+	return Inventory.sort_items(stash,STASH) or fail("自动整理无法放下所有物品，原位置保留。")
+
+func deposit_all() -> bool:
+	if phase!="camp":
+		return false
+	return Inventory.transfer_all(bag,stash,STASH) or fail("仓库空间不足，未转移任何物品。")
+
+func can_extract() -> bool:
+	if dungeon.is_empty():
+		return phase in ["loot","event","exit"]
+	return phase in ["explore","loot"] and (map_position==0 or map_position==Dungeon.COUNT-1 and dungeon[map_position].cleared)
+
+func reveal_tile(index: int) -> bool:
+	if phase!="explore" or not Dungeon.accessible(dungeon,index):
+		return fail("只能探索与已清理区域相邻的迷雾。")
+	var tile: Dictionary = dungeon[index]
+	if tile.flag:
+		return fail("此处已标记危险，请先取消标记。")
+	map_position = index
+	if tile.seen and tile.cleared:
+		return true
+	tile.seen = true
+	tile.scouted = true
+	match str(tile.kind):
+		"combat","elite","boss":
+			encounter_kind = tile.kind
+			room = 0 if tile.kind=="combat" else 1
+			start_encounter()
+		"chest":
+			tile.cleared = true
+			pending_loot = [make_item(),make_item(-1,1)]
+			card_rewards.clear()
+			run_gold += 25
+			after_loot = "explore"
+			phase = "loot"
+			note("发现遗物宝箱，获得25待结算金币。")
+		"event":
+			event_used = false
+			phase = "event"
+		"trap":
+			tile.cleared = true
+			var roll := rng.randi_range(1,100)
+			if Rules.event_check(int(player.perception),roll)=="失败":
+				player.hp = maxi(1,int(player.hp)-12)
+				note("触发陷阱：感知检定%d，失去12生命（最低1）。" % roll)
+			else:
+				note("感知检定%d，成功避开陷阱。" % roll)
+		"rest":
+			tile.cleared = true
+			player.hp = mini(int(player.max_hp),int(player.hp)+35)
+			note("找到营火，恢复最多35生命。")
+		"empty":
+			Dungeon.reveal_empty(dungeon,index)
+		_:
+			tile.cleared = true
+	return true
+
+func flag_tile(index: int) -> bool:
+	if phase!="explore" or index<0 or index>=dungeon.size() or dungeon[index].seen:
+		return false
+	dungeon[index].flag = not dungeon[index].flag
+	return true
+
+func scout_tile(index: int) -> bool:
+	if phase!="explore" or scouts<=0 or not Dungeon.accessible(dungeon,index):
+		return fail("侦察次数不足，或目标不在相邻迷雾。")
+	if dungeon[index].seen or dungeon[index].scouted:
+		return fail("这个格子已经看清。")
+	scouts -= 1
+	dungeon[index].scouted = true
+	note("侦察发现：%s。进入后才会触发。" % Dungeon.TITLES[dungeon[index].kind])
 	return true
 
 func snapshot() -> Dictionary:
-	return encode({"version":SAVE_VERSION,"run_deck":run_deck,"draw_pile":draw_pile,"hand":hand,"discard_pile":discard_pile,"exhaust_pile":exhaust_pile,"card_rewards":card_rewards,"energy":energy,"momentum":momentum,"retain_block":retain_block,"rng_seed":str(rng.seed),"rng_state":str(rng.state),"phase":phase,"room":room,"gold":gold,"run_gold":run_gold,"serial":serial,"bag":bag,"stash":stash,"equipment":equipment,"pending_loot":pending_loot,"after_loot":after_loot,"player":player,"enemies":enemies,"walls":walls,"turn_queue":turn_queue,"round_no":round_no,"player_turn":player_turn,"ap":ap,"movement":movement,"potions":potions,"log_lines":log_lines,"last_result":last_result,"event_used":event_used})
+	return encode({"version":SAVE_VERSION,"dungeon":dungeon,"map_position":map_position,"encounter_kind":encounter_kind,"scouts":scouts,"draw_pity":draw_pity,"draw_history":draw_history,"run_deck":run_deck,"draw_pile":draw_pile,"hand":hand,"discard_pile":discard_pile,"exhaust_pile":exhaust_pile,"card_rewards":card_rewards,"energy":energy,"momentum":momentum,"retain_block":retain_block,"rng_seed":str(rng.seed),"rng_state":str(rng.state),"phase":phase,"room":room,"gold":gold,"run_gold":run_gold,"serial":serial,"bag":bag,"stash":stash,"equipment":equipment,"pending_loot":pending_loot,"after_loot":after_loot,"player":player,"enemies":enemies,"walls":walls,"turn_queue":turn_queue,"round_no":round_no,"player_turn":player_turn,"ap":ap,"movement":movement,"potions":potions,"log_lines":log_lines,"last_result":last_result,"event_used":event_used})
 
 func encode(value: Variant) -> Variant:
 	if value is Vector2i:
@@ -525,10 +708,17 @@ func decode(value: Variant) -> Variant:
 	return value
 
 func restore(data: Variant) -> bool:
-	if not data is Dictionary or int(data.get("version",0)) not in [1,SAVE_VERSION]:
+	if not data is Dictionary or int(data.get("version",0)) not in [1,2,SAVE_VERSION]:
 		return false
 	var legacy := int(data.version) == 1
 	var converted: Dictionary = data.duplicate(true)
+	if int(data.version)<3:
+		converted.dungeon = []
+		converted.map_position = 0
+		converted.encounter_kind = "combat" if int(data.room)==0 else "boss"
+		converted.scouts = 2
+		converted.draw_pity = 0
+		converted.draw_history = []
 	if legacy:
 		for key in ["run_deck","draw_pile","hand","discard_pile","exhaust_pile","card_rewards"]:
 			converted[key] = []
@@ -542,7 +732,7 @@ func restore(data: Variant) -> bool:
 		return false
 	if not Inventory.validate(converted.bag,BAG) or not Inventory.validate(converted.stash,STASH):
 		return false
-	if converted.phase not in ["camp","combat","loot","event","exit"] or int(converted.gold) < 0:
+	if converted.phase not in ["camp","combat","loot","event","exit","explore"] or int(converted.gold) < 0:
 		return false
 	for key in ["run_deck","draw_pile","hand","discard_pile","exhaust_pile","card_rewards"]:
 		if not converted[key] is Array:
@@ -559,6 +749,12 @@ func restore(data: Variant) -> bool:
 		deck_copy.sort()
 		if all_cards != deck_copy or deck_copy.is_empty():
 			return false
+	if not converted.dungeon is Array or (not converted.dungeon.is_empty() and not Dungeon.validate(converted.dungeon,int(converted.map_position))):
+		return false
+	if converted.phase=="explore" and converted.dungeon.is_empty():
+		return false
+	if int(converted.draw_pity)<0 or int(converted.draw_pity)>9 or int(converted.scouts)<0 or not converted.draw_history is Array:
+		return false
 	var ids := {}
 	for item in converted.bag + converted.stash + converted.equipment.values() + converted.pending_loot:
 		if not item is Dictionary or not item.has("id") or ids.has(str(item.id)):
@@ -596,8 +792,10 @@ func load_game() -> bool:
 			if parser.parse(FileAccess.get_file_as_string(candidate)) != OK:
 				continue
 			if restore(parser.data):
-				if int(parser.data.version)==1 and not FileAccess.file_exists(save_path+".v1"):
-					DirAccess.copy_absolute(candidate,save_path+".v1")
+				if int(parser.data.version)<SAVE_VERSION:
+					var backup := save_path+".v"+str(int(parser.data.version))
+					if not FileAccess.file_exists(backup):
+						DirAccess.copy_absolute(candidate,backup)
 				if candidate.ends_with(".bak"):
 					note("主存档不可用，已恢复最近的备份。")
 				return true

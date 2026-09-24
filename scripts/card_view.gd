@@ -6,47 +6,77 @@ var chosen := false
 var ordinal := 0
 var summary := ""
 var compact := false
-var hover_amount := 0.0
+var turn := 0
+signal hovered(view: Control)
+signal unhovered(view: Control)
+
+func _init() -> void:
+	custom_minimum_size = Vector2(180,230)
 
 func _ready() -> void:
-	custom_minimum_size = Vector2(188,216 if not compact else 192)
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	tooltip_text = Cards.DATA[card_id].text + ("\n"+summary if not summary.is_empty() else "")
-	for state in ["normal","hover","pressed","focus","disabled"]:
-		add_theme_stylebox_override(state,StyleBoxEmpty.new())
-
-func _process(delta: float) -> void:
-	hover_amount = move_toward(hover_amount,1.0 if is_hovered() or chosen else 0.0,delta*8)
-	queue_redraw()
-
-func _draw() -> void:
 	var card: Dictionary = Cards.DATA[card_id]
 	var color := Color(card.color)
+	for state in ["normal","hover","pressed","disabled","focus"]:
+		var style := StyleBoxFlat.new()
+		style.bg_color = Color("1a2938") if state!="hover" else Color("304457")
+		style.border_color = color if chosen or state in ["hover","focus"] else Color(color,0.55)
+		style.set_border_width_all(2)
+		style.set_corner_radius_all(9)
+		add_theme_stylebox_override(state,style)
+	var margin := MarginContainer.new()
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for side in ["left","right","top","bottom"]:
+		margin.add_theme_constant_override("margin_"+side,10)
+	add_child(margin)
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation",5)
+	margin.add_child(column)
+	var heading := HBoxContainer.new()
+	column.add_child(heading)
+	add_label(heading,"%d" % card.cost,23,color)
+	add_label(heading,card.name,20,color)
+	var art := TextureRect.new()
+	art.texture = load("res://assets/art/rin.webp") if card.has("attack") else load("res://assets/art/sealed-sanctum.webp")
+	art.custom_minimum_size.y = 56
+	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	art.modulate = Color(color,0.85)
+	column.add_child(art)
+	add_label(column,summary,14,color)
+	var description := add_label(column,card.text,13,Color("e2e6ef"))
+	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	description.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	add_label(column,("消耗" if card.get("exhaust",false) else card.type)+("  [%d]" % (ordinal%10) if ordinal>0 else ""),12,Color("97b1c7"))
+	ignore_mouse(margin)
+	tooltip_text = card.text+"\n"+summary
+	# Keep text legible when unaffordable; only tint the artwork.
 	if disabled:
-		color = color.darkened(0.5)
-	var rect := Rect2(Vector2(3,10-hover_amount*7),size-Vector2(6,13))
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color("182434") if not chosen else Color("27394a")
-	style.border_color = color if chosen or is_hovered() else Color(color,0.45)
-	style.set_border_width_all(2 if chosen else 1)
-	style.set_corner_radius_all(10)
-	draw_style_box(style,rect)
-	draw_rect(Rect2(rect.position+Vector2(1,46),Vector2(rect.size.x-2,49)),Color(color,0.09))
-	var center := Vector2(size.x/2,rect.position.y+70)
-	if card.has("attack"):
-		draw_line(center+Vector2(-17,14),center+Vector2(17,-14),color,3,true)
-		draw_line(center+Vector2(-13,-5),center+Vector2(2,11),color,2,true)
-	elif card.has("block"):
-		draw_polyline(PackedVector2Array([center+Vector2(-14,-12),center+Vector2(14,-12),center+Vector2(12,9),center+Vector2(0,18),center+Vector2(-12,9),center+Vector2(-14,-12)]),color,2,true)
-	else:
-		draw_arc(center,17,0,TAU,32,color,2,true)
-		draw_line(center+Vector2(-24,0),center+Vector2(24,0),color,2,true)
-	draw_circle(rect.position+Vector2(22,24),15,color)
-	draw_string(font,rect.position+Vector2(16,30),str(card.cost),HORIZONTAL_ALIGNMENT_LEFT,-1,19,Color("0d1823"))
-	draw_string(font,rect.position+Vector2(45,31),card.name,HORIZONTAL_ALIGNMENT_LEFT,-1,19,color)
-	draw_string(font,rect.position+Vector2(12,115),summary if not summary.is_empty() else card.type,HORIZONTAL_ALIGNMENT_LEFT,rect.size.x-24,13,color)
-	draw_multiline_string(font,rect.position+Vector2(12,138),card.text,HORIZONTAL_ALIGNMENT_LEFT,rect.size.x-24,13,4,Color("c2cbd9"))
-	if not compact:
-		draw_string(font,rect.position+Vector2(12,rect.size.y-10),"消耗" if card.get("exhaust",false) else card.type,HORIZONTAL_ALIGNMENT_LEFT,-1,11,Color("91a0b3"))
-		if ordinal>0:
-			draw_string(font,rect.position+Vector2(rect.size.x-25,rect.size.y-10),str(ordinal%10),HORIZONTAL_ALIGNMENT_LEFT,-1,12,Color("91a0b3"))
+		art.modulate.a = 0.35
+	mouse_entered.connect(func(): hovered.emit(self))
+	mouse_exited.connect(func(): unhovered.emit(self))
+
+func add_label(parent: Node,value: String,font_size: int,color: Color) -> Label:
+	var label := Label.new()
+	label.text = value
+	label.add_theme_font_override("font",font)
+	label.add_theme_font_size_override("font_size",font_size)
+	label.add_theme_color_override("font_color",color)
+	parent.add_child(label)
+	return label
+
+func ignore_mouse(node: Node) -> void:
+	if node is Control:
+		node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for child in node.get_children():
+		ignore_mouse(child)
+
+func _get_drag_data(_point: Vector2) -> Variant:
+	if ordinal<=0 or disabled:
+		return null
+	var preview := Label.new()
+	preview.text = "「%s」→ 目标" % Cards.DATA[card_id].name
+	preview.add_theme_font_override("font",font)
+	preview.add_theme_font_size_override("font_size",22)
+	set_drag_preview(preview)
+	return {"kind":"card","index":ordinal-1,"id":card_id,"turn":turn}

@@ -18,8 +18,16 @@ func _initialize() -> void:
 	test_economy()
 	test_save()
 	test_full_run()
+	test_services()
+	test_dungeon()
+	test_map_run()
 	print("TEST_RESULT: %d checks, %d failures" % [checks,failures])
 	quit(1 if failures else 0)
+
+func begin_combat(s: RefCounted) -> void:
+	s.start_run()
+	s.dungeon.clear()
+	s.start_encounter()
 
 func test_rules() -> void:
 	check(Rules.damage(27,25,0,1.2)==25,"documented noncritical damage")
@@ -73,7 +81,7 @@ func test_inventory() -> void:
 
 func test_combat() -> void:
 	var s := Session.new(2)
-	s.start_run()
+	begin_combat(s)
 	check(s.player_turn and s.energy==3 and s.hand.size()==5,"first turn draws five and grants three energy")
 	check(s.run_deck.has("heavy"),"sword contributes equipment card")
 	check(s.draw_pile.size()+s.hand.size()==s.run_deck.size(),"opening deck conservation")
@@ -118,7 +126,7 @@ func test_combat() -> void:
 	before = s.snapshot()
 	check(not s.resolve_event("will") and s.snapshot()==before,"event cannot be rerolled")
 	var fresh := Session.new(99)
-	fresh.start_run()
+	begin_combat(fresh)
 	fresh.draw_pile.clear()
 	fresh.hand.clear()
 	fresh.discard_pile = ["guard","strike"]
@@ -164,7 +172,7 @@ func test_economy() -> void:
 	check(not s.sell_item(item.id,s.bag),"cannot sell same item twice")
 	var protected := s.make_item(3,0)
 	Inventory.add(s.bag,protected,Session.BAG)
-	s.start_run()
+	begin_combat(s)
 	var found := s.make_item(3,1)
 	Inventory.add(s.bag,found,Session.BAG)
 	s.player.hp = 0
@@ -174,7 +182,7 @@ func test_economy() -> void:
 
 func test_save() -> void:
 	var s := Session.new(4)
-	s.start_run()
+	begin_combat(s)
 	s.end_turn()
 	var data: Variant = JSON.parse_string(JSON.stringify(s.snapshot()))
 	var restored := Session.new(999)
@@ -212,7 +220,7 @@ func test_save() -> void:
 func test_full_run() -> void:
 	for seed_value in range(6):
 		var s := Session.new(seed_value)
-		s.start_run()
+		begin_combat(s)
 		# High HP removes balance variance while exercising the real turn and loot loop.
 		s.player.hp = 10000
 		s.player.max_hp = 10000
@@ -254,3 +262,140 @@ func test_full_run() -> void:
 		check(s.extract(),"extraction succeeds")
 		check(s.phase=="camp" and s.gold==gold_before+carried_gold,"gold credited on extraction")
 		check(not s.extract(),"cannot extract twice")
+
+func test_services() -> void:
+	var s := Session.new(31)
+	s.gold = 5000
+	var gold_before := s.gold
+	check(s.shop_buy(0) and s.gold==gold_before-s.shop_price(0),"shop charges exact listed price")
+	var item: Dictionary = s.stash.back()
+	check(item.rarity==0 and item.level==0 and not item.found,"shop item is basic and owned")
+	check(s.toggle_lock(item.id),"lock item")
+	var before := s.snapshot()
+	check(not s.sell_item(item.id,s.stash) and before==s.snapshot(),"locked item cannot be sold")
+	s.toggle_lock(item.id)
+	var original_affixes: Array = item.affixes.duplicate(true)
+	check(s.enchant_item(item.id) and item.has("enchantment"),"enchant adds distinct slot")
+	var prior_key: String = item.enchantment.key
+	check(s.enchant_cost(item)==120,"recast price increases")
+	check(s.enchant_item(item.id) and item.enchantment.key!=prior_key,"recast excludes current type")
+	check(item.affixes==original_affixes,"enchant preserves original drop affixes")
+	check(s.equip_item(item.id,s.stash),"enchanted item can be equipped")
+	var calculated := s.build_player()
+	check(calculated==s.player,"equipped enchant recalculates actual stats")
+	for _i in range(5):
+		s.upgrade_weapon()
+	before = s.snapshot()
+	check(s.equipment.weapon.level==5 and not s.upgrade_weapon() and before==s.snapshot(),"upgrade cap is atomic")
+	s.draw_pity = 9
+	gold_before = s.gold
+	check(s.draw_equipment(),"equipment draw succeeds")
+	check(s.stash.back().rarity>=2 and s.draw_pity==0 and s.gold==gold_before-Session.DRAW_COST,"tenth draw guarantees rare and resets")
+	var recovered := Session.new(99)
+	check(recovered.restore(JSON.parse_string(JSON.stringify(s.snapshot()))),"services save restores")
+	check(recovered.draw_history==JSON.parse_string(JSON.stringify(s.draw_history)) and recovered.equipment==JSON.parse_string(JSON.stringify(s.equipment)),"draw results and enchants persist")
+	s.gold = 0
+	before = s.snapshot()
+	check(not s.shop_buy(0) and not s.draw_equipment() and not s.enchant_item(s.equipment.weapon.id),"insufficient gold blocks services")
+	check(s.snapshot()==before,"failed services cannot advance RNG or modify inventory")
+	var full := Session.new(44)
+	full.gold = 9000
+	full.stash.clear()
+	for _i in range(80):
+		Inventory.add(full.stash,full.make_item(3,0),Session.STASH)
+	before = full.snapshot()
+	check(not full.shop_buy(0) and not full.draw_equipment(),"full warehouse blocks buys and draws")
+	check(full.snapshot()==before,"capacity rejection preserves money pity and RNG")
+	Inventory.add(full.bag,full.make_item(0,0),Session.BAG)
+	before = full.snapshot()
+	check(not full.deposit_all() and full.snapshot()==before,"bulk deposit is transactional")
+	var ids: Array = []
+	for stored in full.stash:
+		ids.append(stored.id)
+	check(full.tidy_stash() and Inventory.validate(full.stash,Session.STASH),"sort creates legal packing")
+	check(full.stash.size()==ids.size(),"sort preserves item count")
+
+func test_dungeon() -> void:
+	for seed_value in range(10):
+		var s := Session.new(seed_value)
+		s.start_run()
+		check(s.phase=="explore" and s.dungeon.size()==35,"run starts on fog map")
+		check(Session.Dungeon.validate(s.dungeon,0),"generated map valid")
+		check(Session.Dungeon.danger(s.dungeon,0)==0,"safe opening area")
+		var before := s.snapshot()
+		check(not s.reveal_tile(34) and before==s.snapshot(),"cannot jump to hidden boss")
+		check(s.flag_tile(1) and not s.reveal_tile(1),"flag prevents accidental reveal")
+		s.flag_tile(1)
+		check(s.scout_tile(1) and s.scouts==1 and not s.dungeon[1].seen,"scout reveals type without triggering")
+		before = s.snapshot()
+		check(not s.scout_tile(1) and s.snapshot()==before,"repeat scouting costs nothing")
+		check(s.reveal_tile(1) and s.dungeon[1].cleared,"safe reveal succeeds")
+		var recovered := Session.new(999)
+		check(recovered.restore(JSON.parse_string(JSON.stringify(s.snapshot()))),"map save restores")
+		check(recovered.dungeon==s.dungeon and recovered.map_position==s.map_position,"fog and position preserved")
+		check(not s.extract(),"must reach extraction point")
+		s.reveal_tile(0)
+		check(s.extract(),"entry allows safe early extraction")
+	var old := Session.new(77)
+	begin_combat(old)
+	var legacy: Dictionary = old.snapshot()
+	legacy.version = 2
+	for key in ["dungeon","map_position","encounter_kind","scouts","draw_pity","draw_history"]:
+		legacy.erase(key)
+	var next := Session.new(99)
+	check(next.restore(legacy) and next.hand==old.hand and next.dungeon.is_empty(),"v2 active card encounter continues unchanged")
+
+func test_map_run() -> void:
+	var s := Session.new(123)
+	s.start_run()
+	s.player.hp = 10000
+	s.player.max_hp = 10000
+	var iterations := 0
+	while iterations<500:
+		iterations += 1
+		if s.phase=="explore":
+			if s.dungeon[34].cleared:
+				s.reveal_tile(34)
+				break
+			var next := -1
+			for i in range(35):
+				if not s.dungeon[i].seen and Session.Dungeon.accessible(s.dungeon,i):
+					next = i
+					break
+			check(next>=0,"map always has a reachable frontier")
+			if next<0:
+				break
+			s.reveal_tile(next)
+		elif s.phase=="combat":
+			for _play in range(20):
+				if s.phase!="combat":
+					break
+				var id := ""
+				for enemy in s.enemies:
+					if enemy.hp>0:
+						id = enemy.id
+						break
+				var played := false
+				for i in range(s.hand.size()):
+					if s.play_card(i,id):
+						played = true
+						break
+				if not played:
+					break
+			if s.phase=="combat":
+				s.end_turn()
+		elif s.phase=="loot":
+			for item in s.pending_loot.duplicate():
+				s.take_loot(item.id)
+			if not s.card_rewards.is_empty():
+				s.choose_reward(s.card_rewards[0])
+			s.continue_route()
+		elif s.phase=="event":
+			s.resolve_event("perception")
+		else:
+			break
+	check(s.dungeon[34].cleared and s.can_extract(),"fog exploration reaches boss and exit")
+	var before := s.gold
+	var earned := s.run_gold
+	check(s.extract() and s.gold==before+earned,"map loot settles exactly once")
+	check(not s.extract(),"cannot settle map twice")
