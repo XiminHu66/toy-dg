@@ -42,6 +42,7 @@ func _ready() -> void:
 	theme_value.set_stylebox("hover","Button",box("345465",8))
 	theme_value.set_stylebox("pressed","Button",box("346a68",8))
 	theme_value.set_stylebox("disabled","Button",box("192632",8))
+	theme_value.set_stylebox("panel","AcceptDialog",box("101e2c",10))
 	set_theme(theme_value)
 	game.load_game()
 	if "--capture" in OS.get_cmdline_user_args() or "--smoke" in OS.get_cmdline_user_args():
@@ -315,7 +316,7 @@ func show_pile(title_value: String,ids: Array) -> void:
 	deck_grid(margin,ids)
 	window.confirmed.connect(window.queue_free)
 	window.canceled.connect(window.queue_free)
-	window.popup_centered(Vector2i(760,550))
+	window.popup_centered(Vector2i(840,550))
 
 func combat(column: VBoxContainer) -> void:
 	var top := HBoxContainer.new()

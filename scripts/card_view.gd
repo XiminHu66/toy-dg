@@ -9,7 +9,7 @@ var compact := false
 var hover_amount := 0.0
 
 func _ready() -> void:
-	custom_minimum_size = Vector2(164,216 if not compact else 192)
+	custom_minimum_size = Vector2(188,216 if not compact else 192)
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	tooltip_text = Cards.DATA[card_id].text + ("\n"+summary if not summary.is_empty() else "")
 	for state in ["normal","hover","pressed","focus","disabled"]:
@@ -45,7 +45,7 @@ func _draw() -> void:
 	draw_string(font,rect.position+Vector2(16,30),str(card.cost),HORIZONTAL_ALIGNMENT_LEFT,-1,19,Color("0d1823"))
 	draw_string(font,rect.position+Vector2(45,31),card.name,HORIZONTAL_ALIGNMENT_LEFT,-1,19,color)
 	draw_string(font,rect.position+Vector2(12,115),summary if not summary.is_empty() else card.type,HORIZONTAL_ALIGNMENT_LEFT,rect.size.x-24,13,color)
-	draw_multiline_string(font,rect.position+Vector2(12,138),card.text,HORIZONTAL_ALIGNMENT_LEFT,rect.size.x-24,13,3,Color("c2cbd9"))
+	draw_multiline_string(font,rect.position+Vector2(12,138),card.text,HORIZONTAL_ALIGNMENT_LEFT,rect.size.x-24,13,4,Color("c2cbd9"))
 	if not compact:
 		draw_string(font,rect.position+Vector2(12,rect.size.y-10),"消耗" if card.get("exhaust",false) else card.type,HORIZONTAL_ALIGNMENT_LEFT,-1,11,Color("91a0b3"))
 		if ordinal>0:

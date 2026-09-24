@@ -24,7 +24,7 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 func enemy_center(i: int) -> Vector2:
-	return Vector2(size.x*(0.64+0.21*i),size.y*0.57)
+	return Vector2(size.x*(0.64+0.21*i),size.y*0.52)
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
@@ -41,16 +41,24 @@ func bar(point: Vector2,width: float,value: float,maximum: float,color: Color) -
 	draw_rect(Rect2(point,Vector2(width*clampf(value/maxf(maximum,1),0,1),6)),color)
 
 func _draw() -> void:
-	draw_texture_rect(background,Rect2(Vector2.ZERO,size),false)
+	var texture_size := background.get_size()
+	var zoom := maxf(size.x/texture_size.x,size.y/texture_size.y)
+	var crop_size := size/zoom
+	draw_texture_rect_region(background,Rect2(Vector2.ZERO,size),Rect2((texture_size-crop_size)*Vector2(0.5,0.6),crop_size))
 	draw_rect(Rect2(Vector2.ZERO,size),Color(0.025,0.045,0.075,0.42))
-	var ground := size.y*0.83
+	var ground := size.y*0.76
 	var hero := Vector2(size.x*0.2,ground)
 	var attack_shift := sin(pulse*PI)*18 if session.last_result.get("kind","")=="card" else 0.0
-	var h := size.y*0.85
+	var h := ground-12
 	draw_texture_rect(portrait,Rect2(Vector2(hero.x-h*0.32+attack_shift,ground-h),Vector2(h*0.66,h)),false)
 	text_at(Vector2(hero.x,ground+17),"凛 · 拾遗者",Color("e9edf3"),18)
 	bar(Vector2(hero.x-83,ground+25),166,session.player.hp,session.player.max_hp,Color("79cdb6"))
 	text_at(Vector2(hero.x,ground+49),"生命 %d/%d   格挡 %d" % [session.player.hp,session.player.max_hp,session.player.block],Color("b5e4da"),14)
+	var player_bleed := 0
+	for effect in session.player.bleeds:
+		player_bleed += int(effect.damage)
+	if player_bleed>0:
+		text_at(Vector2(hero.x,ground+65),"流血 %d/回合（无视格挡）" % player_bleed,Color("e194a6"),12)
 	for i in range(session.enemies.size()):
 		var target: Dictionary = session.enemies[i]
 		if target.hp<=0:
@@ -79,10 +87,13 @@ func _draw() -> void:
 		text_at(Vector2(center.x,ground+17),target.name,col,18)
 		bar(Vector2(center.x-78,ground+25),156,target.hp,target.max_hp,col)
 		text_at(Vector2(center.x,ground+47),"%d/%d   格挡 %d   韧性 %d" % [target.hp,target.max_hp,target.block,target.toughness],Color("d5d6de"),13)
-		var effects := "流血 %d   易伤 %d" % [target.bleeds.size(),target.vulnerable]
+		var bleed_damage := 0
+		for effect in target.bleeds:
+			bleed_damage += int(effect.damage)
+		var effects := "流血 %d/回合   易伤 %d回合" % [bleed_damage,target.vulnerable]
 		text_at(Vector2(center.x,ground+65),effects,Color("bc9eb2"),12)
 		if not preview_card.is_empty() and Cards.DATA[preview_card].has("attack"):
-			text_at(center+Vector2(0,87),"预计 %d / 暴击 %d" % [session.card_damage(Cards.DATA[preview_card],target),session.card_damage(Cards.DATA[preview_card],target,true)],Color("fff1c5"),15)
+			text_at(Vector2(center.x,80),"预计 %d / 暴击 %d" % [session.card_damage(Cards.DATA[preview_card],target),session.card_damage(Cards.DATA[preview_card],target,true)],Color("fff1c5"),15)
 		if pulse>0 and session.last_result.get("target_id","")==target.id:
 			draw_line(center+Vector2(-38,32)*pulse,center+Vector2(38,-32)*pulse,Color(1,0.87,0.65,pulse),5,true)
 			text_at(center+Vector2(0,-25-(1-pulse)*38),"-%d" % session.last_result.get("damage",0),Color(1,0.87,0.65,pulse),28)
