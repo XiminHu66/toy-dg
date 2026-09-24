@@ -13,3 +13,5 @@ Use case: stylized-concept. Asset type: original anime dark fantasy game environ
 Prompt:
 
 Use case: stylized-concept. Asset type: original anime game character sprite, full body isolated on fully transparent background. Adult woman dungeon relic hunter, short silver bob with long asymmetric side lock, teal eyes, composed expression, black and navy high collar tactical coat with jade lining and gold geometric seals, practical boots and gloves, dark fitted trousers. Holds a slim fractured luminous sword angled downward in right hand. Three-quarter view facing right, combat-ready graceful stance, readable silhouette, full body including boots and sword entirely in frame with generous transparent margin. High quality 2D anime cel-shaded game illustration, precise elegant lineart, muted jade/navy/gold palette. No text, no logo, no ground, no scenery, no frame, no cropped limbs. Original character for a dark fantasy card RPG.
+
+新增营地与地图场景见 [UI素材记录](ui-art-provenance.md)。

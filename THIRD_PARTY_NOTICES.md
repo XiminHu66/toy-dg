@@ -10,7 +10,8 @@ metadata is retained in the font; the derivative family was renamed Dungeon Sans
 It is licensed under the SIL Open Font License 1.1, included in
 `assets/fonts/OFL.txt`. This font license does not license the game code.
 
-`assets/art/sealed-sanctum.webp` and `assets/art/rin.webp` are original AI-generated
+`assets/art/sealed-sanctum.webp`, `assets/art/rin.webp`,
+`assets/art/camp-observatory.webp`, and `assets/art/dungeon-atlas.webp` are original AI-generated
 illustrations created for this project using the built-in image generation tool.
 Generation prompts and provenance are documented in `docs/art-provenance.md`.
 Enemy sigils, card ornaments, and inventory symbols are drawn by project code.

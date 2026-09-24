@@ -1,4 +1,9 @@
 extends Control
+const Inventory = preload("res://scripts/inventory.gd")
+var hovered_id := ""
+var drop_point := Vector2i(-1,-1)
+var drop_item: Dictionary = {}
+var drop_valid := false
 signal selected(id: String)
 signal moved(id: String, point: Vector2i)
 var items: Array = []
@@ -13,6 +18,8 @@ var catalog: Dictionary
 func _ready() -> void:
 	custom_minimum_size = Vector2(bounds)*cell
 	mouse_filter = Control.MOUSE_FILTER_STOP
+	clip_contents = true
+	mouse_exited.connect(func(): hovered_id=""; queue_redraw())
 
 func at(point: Vector2i) -> String:
 	for item in items:
@@ -20,7 +27,25 @@ func at(point: Vector2i) -> String:
 			return str(item.id)
 	return ""
 
+func _get_tooltip(position_value: Vector2) -> String:
+	var id := at(Vector2i(position_value/cell))
+	for item in items:
+		if item.id==id:
+			var result := "%s +%d · %s\n出售 %d金币 / 每格 %.1f金币\n占用 %d×%d格" % [item.name,item.level,catalog.rarities[int(item.rarity)].name,item.value,float(item.value)/(item.w*item.h),item.w,item.h]
+			for affix in item.affixes+([item.enchantment] if item.has("enchantment") else []):
+				result += "\n%s +%d" % [affix.label,affix.value]
+			return result+"\n点击查看 · 拖拽整理 · R旋转"
+	return "空闲格 · 将装备拖到这里"
+
+func _notification(what: int) -> void:
+	if what==NOTIFICATION_DRAG_END:
+		drop_item.clear()
+		queue_redraw()
+
 func _gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion:
+		hovered_id = at(Vector2i(event.position/cell))
+		queue_redraw()
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		var id := at(Vector2i(event.position/cell))
 		if not id.is_empty():
@@ -39,8 +64,17 @@ func _get_drag_data(position_value: Vector2) -> Variant:
 	selected.emit(id)
 	return {"id":id,"source":get_instance_id()}
 
-func _can_drop_data(_position_value: Vector2,data: Variant) -> bool:
-	return editable and data is Dictionary and data.get("source",0) == get_instance_id()
+func _can_drop_data(position_value: Vector2,data: Variant) -> bool:
+	if not editable or not data is Dictionary or data.get("source",0)!=get_instance_id():
+		return false
+	drop_point = Vector2i(position_value/cell)
+	for item in items:
+		if item.id==data.id:
+			drop_item = item.duplicate()
+			drop_valid = Inventory.fits(items,item,drop_point,bounds,str(item.id))
+			queue_redraw()
+			return drop_valid
+	return false
 
 func _drop_data(position_value: Vector2,data: Variant) -> void:
 	moved.emit(str(data.id),Vector2i(position_value/cell))
@@ -52,7 +86,7 @@ func _draw() -> void:
 	for item in items:
 		var rect := Rect2(Vector2(float(item.x),float(item.y))*cell+Vector2.ONE,Vector2(float(item.w),float(item.h))*cell-Vector2.ONE*4)
 		var color := Color(str(catalog.rarities[int(item.rarity)].color))
-		draw_rect(rect,Color(color,0.14))
+		draw_rect(rect,Color(color,0.28 if item.id==hovered_id else 0.14))
 		draw_rect(rect,color if item.id == selected_id else Color(color,0.45),false,2 if item.id == selected_id else 1)
 		var center_value := rect.get_center()
 		if item.type == "weapon":
@@ -66,3 +100,9 @@ func _draw() -> void:
 			draw_string(font,rect.position+Vector2(6,17),str(item.name).left(4),HORIZONTAL_ALIGNMENT_LEFT,-1,12,color)
 		if item.get("found",false):
 			draw_circle(rect.position+Vector2(rect.size.x-6,6),3,Color("6fe1c5"))
+
+	if not drop_item.is_empty():
+		var footprint := Rect2(Vector2(drop_point)*cell,Vector2(float(drop_item.w),float(drop_item.h))*cell)
+		var tint := Color("7de7bf") if drop_valid else Color("ee8795")
+		draw_rect(footprint,Color(tint,0.25))
+		draw_rect(footprint,tint,false,2)

@@ -5,7 +5,24 @@ const Arena = preload("res://scripts/arena.gd")
 const CardView = preload("res://scripts/card_view.gd")
 const Cards = preload("res://scripts/cards.gd")
 const InventoryView = preload("res://scripts/inventory_view.gd")
+const ExplorationView = preload("res://scripts/exploration_view.gd")
+const SceneBackdrop = preload("res://scripts/scene_backdrop.gd")
 const Rules = preload("res://scripts/rules.gd")
+var atlas: Control
+var help_window: AcceptDialog
+var feedback: PanelContainer
+var scene_background: Control
+var map_seen: Array = []
+var map_origin := -1
+const RESOURCE_HELP := {
+ "金币":"金币 / 永久资产\n撤离结算、出售装备获得。用于购买、强化、附魔与寻宝。",
+ "本局":"本局收益 / 尚未结算\n地下城宝箱、战斗和事件获得，成功撤离后变成永久金币。",
+ "战意":"战意 / 回合资源\n每回合恢复为2，上限8。基础攻击和防御可补充。\n回合结束剩余至多3点，每点转为2格挡；韧性达20时为3格挡。",
+ "灵纹":"灵纹 / 本次探索资源\n每场战斗获得2，研习牌获得2，上限12。跨战斗保留，回营清空。\n战斗研习：购牌3–5、精简3、刷新1。",
+ "侦察":"侦察 / 探索次数\n开局按感知获得1–3次。选择侦察模式再点相邻未知房间。\n只揭示类型，不进入、不触发事件；重复侦察不扣次数。",
+ "疗伤药":"疗伤药 / 探索补给\n每次出征补充2瓶。战斗中花1战意使用，恢复最多30生命。",
+ "背包":"随身背包 / 6×5格\n拖拽整理，选择装备后按R旋转。青色圆点是本局战利品。\n营地可以转入10×8仓库；成功撤离才能保住本局新物品。"
+}
 var game := Session.new()
 var font: Font
 var body: HBoxContainer
@@ -52,12 +69,20 @@ func _ready() -> void:
 	theme_value.set_color("font_color","Button",Color("dce5ef"))
 	theme_value.set_color("font_hover_color","Button",Color("ffffff"))
 	theme_value.set_color("font_disabled_color","Button",Color("63788b"))
-	theme_value.set_stylebox("normal","Button",box("233744",8))
+	theme_value.set_stylebox("normal","Button",box("203b46",7))
 	theme_value.set_stylebox("hover","Button",box("345465",8))
 	theme_value.set_stylebox("pressed","Button",box("346a68",8))
 	theme_value.set_stylebox("disabled","Button",box("192632",8))
 	theme_value.set_stylebox("panel","AcceptDialog",box("101e2c",10))
+	theme_value.set_stylebox("panel","TooltipPanel",box("102c37",8))
+	theme_value.set_color("font_color","TooltipLabel",Color("ecdfbd"))
+	theme_value.set_font_size("font_size","TooltipLabel",15)
+	theme_value.set_stylebox("background","ProgressBar",box("152632",4))
+	theme_value.set_stylebox("fill","ProgressBar",box("4d9d91",4))
 	set_theme(theme_value)
+	scene_background = SceneBackdrop.new()
+	scene_background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(scene_background)
 	game.load_game()
 	if "--capture" in OS.get_cmdline_user_args() or "--smoke" in OS.get_cmdline_user_args():
 		game = Session.new(23)
@@ -78,7 +103,9 @@ func _ready() -> void:
 	header.add_child(title_column)
 	label(title_column,"地城拾遗",29,"eef3fa")
 	label(title_column,"RELIC / RUNNER     ·     牌与遗物",12,"76b7b2")
-	header_stats = label(header,"",17,"e8cc99")
+	header_stats = label(header,"",16,"e8cc99")
+	header_stats.tooltip_text = RESOURCE_HELP["金币"]+"\n\n"+RESOURCE_HELP["本局"]
+	button(header,"? 手册",show_help).tooltip_text = "展开资源、战斗、探索和营地规则"
 	body = HBoxContainer.new()
 	body.add_theme_constant_override("separation",18)
 	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -99,6 +126,10 @@ func _ready() -> void:
 			camp_tab = tab
 			refresh()
 			await capture_screen({"出征":"camp","仓库":"warehouse","商店":"shop","工坊":"workshop","抽奖":"draw","牌组":"deck"}[tab])
+		show_help()
+		help_window.get_child(0).get_child(0).get_child(0).get_child(0).get_child(0).pressed.emit()
+		await capture_screen("handbook")
+		close_help()
 		game.start_run()
 		game.reveal_tile(1)
 		refresh()
@@ -136,6 +167,31 @@ func _ready() -> void:
 		game.start_run()
 		refresh()
 		await settle_layout("explore")
+		for i in range(35):
+			if atlas.hit(atlas.center(i))!=i:
+				push_error("Map hit target mismatch")
+			var tile: Dictionary = game.dungeon[i]
+			if not tile.seen and not tile.scouted and "未知房间" not in atlas.describe(i):
+				push_error("Map leaked hidden room")
+		show_help()
+		await get_tree().process_frame
+		if not is_instance_valid(help_window) or not help_window.visible:
+			push_error("Resource handbook did not open")
+		close_help()
+		map_mode = "标记"
+		atlas.activated.emit(1)
+		if not game.dungeon[1].flag:
+			push_error("Map flag interaction failed")
+		atlas.flagged.emit(1)
+		var scouts_before := game.scouts
+		map_mode = "侦察"
+		atlas.activated.emit(1)
+		if not game.dungeon[1].scouted or game.dungeon[1].seen or game.scouts!=scouts_before-1:
+			push_error("Scouting should reveal without entering")
+		map_mode = "探索"
+		atlas.activated.emit(1)
+		if not game.dungeon[1].seen or game.map_position!=1:
+			push_error("Map exploration interaction failed")
 		game.start_encounter()
 		refresh()
 		await settle_layout("combat")
@@ -187,6 +243,15 @@ func _ready() -> void:
 			camp_tab = tab
 			refresh()
 			await settle_layout(tab)
+		game.gold = 500
+		game.stash.clear()
+		camp_tab = "抽奖"
+		refresh()
+		draw_relic()
+		draw_relic()
+		await get_tree().create_timer(1.6).timeout
+		if game.gold!=380 or combat_busy or game.stash.size()!=1:
+			push_error("Relic reveal did not protect against duplicate purchase")
 		print("UI_SMOKE_OK")
 		get_tree().quit()
 
@@ -225,6 +290,10 @@ func box(hex: String, radius: int = 12) -> StyleBoxFlat:
 	var result := StyleBoxFlat.new()
 	result.bg_color = Color(hex)
 	result.set_corner_radius_all(radius)
+	result.border_color = Color("395460")
+	result.set_border_width_all(1)
+	if hex=="101e2c":
+		result.bg_color = Color(0.035,0.075,0.11,0.89)
 	result.content_margin_left = 14
 	result.content_margin_right = 14
 	result.content_margin_top = 10
@@ -251,6 +320,14 @@ func button(parent: Node,text_value: String,action: Callable,disabled: bool = fa
 	result.disabled = disabled
 	result.pressed.connect(action)
 	parent.add_child(result)
+	for resource in RESOURCE_HELP:
+		if resource in text_value:
+			result.tooltip_text = RESOURCE_HELP[resource]
+			break
+	result.mouse_entered.connect(func():
+		if not result.disabled:
+			result.create_tween().tween_property(result,"self_modulate",Color("baffed"),0.12))
+	result.mouse_exited.connect(func(): result.create_tween().tween_property(result,"self_modulate",Color.WHITE,0.18))
 	return result
 
 func panel(parent: Node,expand: bool = false) -> VBoxContainer:
@@ -271,6 +348,8 @@ func clear(parent: Node) -> void:
 		child.queue_free()
 
 func refresh() -> void:
+	atlas = null
+	scene_background.visible = game.phase!="combat"
 	hand_views.clear()
 	hand_dock = null
 	clear(body)
@@ -300,8 +379,13 @@ func refresh() -> void:
 		var right := panel(right_wrap)
 		right.get_parent().size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		build_right(right)
+	if game.phase!="combat":
+		body.modulate.a = 0.25
+		body.create_tween().tween_property(body,"modulate:a",1.0,0.22)
+	else:
+		body.modulate.a = 1.0
 	footer.clear()
-	for line in game.log_lines.slice(maxi(0,game.log_lines.size()-2)):
+	for line in game.log_lines.slice(maxi(0,game.log_lines.size()-1)):
 		footer.append_text("[color=#b4c5d5]"+str(line)+"[/color]\n")
 	if not toast.is_empty():
 		footer.append_text("[color=#f2c981]"+toast+"[/color]\n")
@@ -315,6 +399,11 @@ func finish_action(success: bool) -> void:
 	refresh()
 	if board != null:
 		board.animate()
+	if not success:
+		notify_result(game.last_error,false)
+	elif game.phase=="camp" or game.phase=="explore":
+		if not game.log_lines.is_empty():
+			notify_result(str(game.log_lines[-1]),true)
 
 func camp(column: VBoxContainer) -> void:
 	var tabs := HBoxContainer.new()
@@ -349,32 +438,41 @@ func camp(column: VBoxContainer) -> void:
 		paragraph(column,"基础牌 + 武器专属牌 + 特殊装备牌。战后获得的卡牌仅在本次探索中保留，装备长期保留。")
 		deck_grid(column,game.starting_deck())
 		return
-	label(column,"封印矿井",32,"f1e8d8")
-	paragraph(column,"在遗物与回声之间，寻找下一种可能。", "b4c6d4")
-	var art := TextureRect.new()
-	art.texture = load("res://assets/art/sealed-sanctum.webp")
-	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-	art.custom_minimum_size.y = 190
-	art.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	column.add_child(art)
-	var itinerary := HBoxContainer.new()
-	itinerary.add_theme_constant_override("separation",18)
-	column.add_child(itinerary)
-	for entry in [["01","揭开迷雾"],["02","战斗寻宝"],["03","返回撤离"],["04","交易养成"]]:
-		var step := panel(itinerary,true)
-		label(step,entry[0],23,"68cdb9")
-		label(step,entry[1],15,"c6cfdc")
-	paragraph(column,"双资源运营 · 每回合抽5张 · 基础牌免费
-探索7×5迷雾地图，数字提示危险；回营后交易、强化、抽奖和附魔。")
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation",14)
-	column.add_child(row)
-	var go := button(row,"开始探索  →",func(): selected_card=-1; target_id=""; finish_action(game.start_run()))
-	go.custom_minimum_size = Vector2(250,52)
-	go.add_theme_stylebox_override("normal",box("356b64",8))
-	var cost := 60 + int(game.equipment.weapon.level)*40
-	button(row,"强化武器 · %d 金币" % cost,func(): finish_action(game.upgrade_weapon()),game.gold<cost or game.equipment.weapon.level>=5)
+	var hero := Control.new()
+	hero.custom_minimum_size.y = 280
+	hero.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_child(hero)
+	var art := SceneBackdrop.new()
+	art.dim = 0.08
+	art.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	hero.add_child(art)
+	var shade := PanelContainer.new()
+	shade.set_anchors_and_offsets_preset(Control.PRESET_LEFT_WIDE)
+	shade.offset_right = 335
+	shade.add_theme_stylebox_override("panel",box("0b1b29d9",0))
+	hero.add_child(shade)
+	var words := VBoxContainer.new()
+	words.add_theme_constant_override("separation",16)
+	shade.add_child(words)
+	label(words,"S E A L E D   O B S E R V A T O R Y",12,"84cbbb")
+	label(words,"星骸观测站",32,"f2e2c4")
+	paragraph(words,"灯火尚未熄灭。\n带上你的牌组，再入迷雾。","b5c8cc")
+	var space := Control.new()
+	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	words.add_child(space)
+	label(words,"封印矿井 · 35个未知房间",16,"e3c98f")
+	var go := button(words,"启程探索  →",func(): selected_card=-1; target_id=""; map_seen.clear(); map_origin=-1; finish_action(game.start_run()))
+	go.custom_minimum_size.y = 52
+	go.add_theme_stylebox_override("normal",box("386e66",7))
+	var services := HBoxContainer.new()
+	services.add_theme_constant_override("separation",12)
+	column.add_child(services)
+	for entry in [["仓库","01 / 整理遗物","格子管理 · 查看估值"],["商店","02 / 遗物交易","出售战利品 · 补充底材"],["工坊","03 / 打造流派","强化装备 · 附魔技能"]]:
+		var card := panel(services,true)
+		label(card,entry[1],17,"e2d0a6")
+		paragraph(card,entry[2])
+		button(card,"进入"+entry[0]+"  →",func(): camp_tab=entry[0]; refresh())
+	paragraph(column,"探索 → 收集 → 撤离 → 养成。准备好后启程，也可以随时打开右上角手册。")
 
 func card_summary(id: String) -> String:
 	var card: Dictionary = Cards.DATA[id]
@@ -495,7 +593,7 @@ func combat(parent: Control) -> void:
 	actions.offset_right = -22
 	actions.offset_top = -48
 	actions.offset_bottom = -10
-	label(actions,"战意 %d" % game.energy,25,"83e0cf")
+	label(actions,"战意 %d" % game.energy,25,"83e0cf").tooltip_text = RESOURCE_HELP["战意"]
 	button(actions,"抽牌 %d" % game.draw_pile.size(),func(): var cards: Array=game.draw_pile.duplicate(); cards.sort(); show_pile("抽牌堆 · 不显示顺序",cards))
 	button(actions,"弃牌 %d" % game.discard_pile.size(),func(): show_pile("弃牌堆",game.discard_pile))
 	button(actions,"本回合 %d" % game.played_pile.size(),func(): show_pile("已打出 · 回合结束入弃牌堆",game.played_pile))
@@ -754,14 +852,20 @@ func build_right(column: VBoxContainer) -> void:
 	var stats: Dictionary = game.player
 	label(column,"生命 %d / %d" % [stats.hp,stats.max_hp],19,"6ed8bf")
 	paragraph(column,"攻击 %d   防御 %d   敏捷 %d\n速度 %d   移动力 %d   破甲 %d\n暴击 %d%%   暴击倍率 %.2f\n感知 %d   意志 %d" % [stats.attack,stats.defense,stats.agility,stats.speed,stats.movement,stats.penetration,stats.crit,stats.crit_damage/100.0,stats.perception,stats.will])
-	paragraph(column,"防御／敏捷增强格挡 · 速度增加首回合抽牌\n移动力强化掠影／影步 · 意志增强心刃", "718ca2")
+	var hp_bar := ProgressBar.new()
+	hp_bar.max_value = stats.max_hp
+	hp_bar.value = stats.hp
+	hp_bar.show_percentage = false
+	hp_bar.custom_minimum_size.y = 7
+	column.add_child(hp_bar)
+	button(column,"属性与流派说明  ›",show_help).tooltip_text = "防御／敏捷增强格挡，速度增加首回合抽牌\n移动力强化掠影／影步，意志增强心刃\n韧性 %d：减轻流血；达到20时提高留力格挡" % stats.toughness
 	for slot in game.equipment:
 		var item: Dictionary = game.equipment[slot]
 		label(column,"▸ %s +%d" % [item.name,item.level],14,str(game.catalog.rarities[int(item.rarity)].color))
 	var used := 0
 	for item in game.bag:
 		used += int(item.w)*int(item.h)
-	label(column,"随身背包  /  %d · 30格" % used,16,"c5d4df")
+	label(column,"随身背包  /  %d · 30格" % used,16,"c5d4df").tooltip_text = RESOURCE_HELP["背包"]
 	bag_view = make_inventory(column,game.bag,Session.BAG,43,"bag")
 	item_details = RichTextLabel.new()
 	item_details.custom_minimum_size.y = 115
@@ -847,7 +951,7 @@ func confirm_sell(item: Dictionary,items: Array) -> void:
 	dialog.popup_centered(Vector2i(420,180))
 
 func _unhandled_key_input(event: InputEvent) -> void:
-	if combat_busy or is_instance_valid(market_window):
+	if combat_busy or is_instance_valid(market_window) or is_instance_valid(help_window):
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_R and game.phase != "combat":
@@ -884,14 +988,19 @@ func shop_room(column: VBoxContainer) -> void:
 	paragraph(column,"基础装备直接购买后入库；出售背包或仓库中的战利品，供养强化与附魔。锁定装备不会被出售。")
 	var content := scrolling_column(column)
 	label(content,"购买基础装备",18,"81cdbb")
+	var goods := GridContainer.new()
+	goods.columns = 2
+	goods.add_theme_constant_override("h_separation",12)
+	goods.add_theme_constant_override("v_separation",12)
+	content.add_child(goods)
 	for i in range(game.catalog.bases.size()):
 		var index := i
 		var item: Dictionary = game.catalog.bases[i]
-		var row := HBoxContainer.new()
-		content.add_child(row)
-		var title := label(row,"%s  ·  %d×%d  ·  购入 %d / 售出 %d" % [item.name,item.w,item.h,game.shop_price(i),item.value],17)
-		title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		button(row,"购买入库",func(): finish_action(game.shop_buy(index)),game.gold<game.shop_price(i))
+		var product := panel(goods,true)
+		label(product,"B A S E  /  %02d" % (i+1),12,"78b8ae")
+		label(product,str(item.name),23,"e8d6b7")
+		label(product,"占用 %d×%d格 · 回收 %d金币" % [item.w,item.h,item.value],14,"9baebc")
+		button(product,"购买入库 · %d金币" % game.shop_price(i),func(): finish_action(game.shop_buy(index)),game.gold<game.shop_price(i))
 	label(content,"出售战利品 / 按每格价值比较",18,"e9d2aa")
 	var owned: Array = game.bag+game.stash
 	owned.sort_custom(func(a,b): return float(a.value)/(a.w*a.h)>float(b.value)/(b.w*b.h))
@@ -908,7 +1017,7 @@ func shop_room(column: VBoxContainer) -> void:
 
 func craft_room(column: VBoxContainer) -> void:
 	label(column,"工坊 / 强化与附魔",29,"e9d2aa")
-	paragraph(column,"强化提升装备基础属性，最高+5；附魔使用一个独立词条槽，再次附魔会替换该槽，保留原有掉落词条。")
+	foldout(column,"工坊规则与费用","强化最高+5，每级基础属性+2。附魔使用独立词条槽，重铸保留原掉落词条。")
 	if game.owned_item(craft_id).is_empty():
 		craft_id = game.equipment.weapon.id
 	var picker := OptionButton.new()
@@ -929,7 +1038,7 @@ func craft_room(column: VBoxContainer) -> void:
 	label(column,"附魔槽 · "+(str(item.enchantment.label)+" +%d" % item.enchantment.value if item.has("enchantment") else "尚未激活"),18,"c4a5ef")
 	paragraph(column,"随机生成一个经典RPG词条，可能获得影步技能。重铸时排除当前附魔种类；费用每次增加40金币。附魔不提高商人回收价。")
 	button(column,"%s · %d金币" % ["重铸附魔" if item.has("enchantment") else "附魔",game.enchant_cost(item)],func(): confirm_enchant(item),game.gold<game.enchant_cost(item))
-	paragraph(column,"可抽取：攻击、防御、生命、敏捷、速度、移动力、暴击、暴伤、破甲、韧性、感知、意志、流血、影步。")
+	foldout(column,"查看附魔池","攻击、防御、生命、敏捷、速度、移动力、暴击、暴伤、破甲、韧性、感知、意志、流血、影步。")
 
 func confirm_enchant(item: Dictionary) -> void:
 	var dialog := ConfirmationDialog.new()
@@ -948,14 +1057,14 @@ func draw_room(column: VBoxContainer) -> void:
 	var banner := panel(column)
 	label(banner,"120 金币 / 次",30,"e9d2aa")
 	label(banner,"普通 55% · 魔法 30% · 稀有 13% · 史诗 2%",19,"bdabdc")
-	paragraph(banner,"四种装备底材等概率。连续9次未获得稀有或史诗，第10次至少稀有；获得稀有或史诗后重置计数。")
+	foldout(banner,"概率与保底说明","四种底材等概率。连续9次未出稀有及以上，第10次至少稀有。稀有及以上重置计数。空间不足不扣款。")
 	label(banner,"保底进度  %d / 9" % game.draw_pity,23,"83e0cf")
 	var bar := ProgressBar.new()
 	bar.max_value = 9
 	bar.value = game.draw_pity
 	bar.show_percentage = false
 	banner.add_child(bar)
-	button(banner,"抽取一次 · 120金币",func(): finish_action(game.draw_equipment()),game.gold<Session.DRAW_COST)
+	button(banner,"唤醒遗物 · 120金币",draw_relic,game.gold<Session.DRAW_COST)
 	button(banner,"查看仓库",func(): camp_tab="仓库"; refresh())
 	var history := scrolling_column(column)
 	label(history,"最近获得",18,"b5cbd6")
@@ -965,59 +1074,136 @@ func draw_room(column: VBoxContainer) -> void:
 		label(history,"%s · %s" % [game.catalog.rarities[int(entry.rarity)].name,entry.name],18,str(game.catalog.rarities[int(entry.rarity)].color))
 
 func explore_room(column: VBoxContainer) -> void:
-	label(column,"封印矿井 / 迷雾探索",27,"e9d2aa")
-	paragraph(column,"亮边格可探索；数字表示周围八格最初的战斗或陷阱数量。右键插旗，零危险通道会自动展开。")
+	var top := HBoxContainer.new()
+	column.add_child(top)
+	var title := label(top,"封印矿井",27,"e9d2aa")
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var count := 0
+	for tile in game.dungeon:
+		if tile.seen:
+			count += 1
+	label(top,"已探索 %02d / 35" % count,16,"84cbbb")
 	var controls := HBoxContainer.new()
 	controls.add_theme_constant_override("separation",10)
 	column.add_child(controls)
 	for mode in ["探索","标记","侦察"]:
-		button(controls,("● " if map_mode==mode else "")+mode,func(): map_mode=mode; refresh(),mode=="侦察" and game.scouts<=0)
-	label(controls,"侦察剩余 %d" % game.scouts,17,"83e0cf")
-	var area := CenterContainer.new()
-	area.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	column.add_child(area)
-	var grid := GridContainer.new()
-	grid.columns = Session.Dungeon.WIDTH
-	grid.add_theme_constant_override("h_separation",8)
-	grid.add_theme_constant_override("v_separation",8)
-	area.add_child(grid)
-	for i in range(game.dungeon.size()):
-		var index := i
-		var tile: Dictionary = game.dungeon[i]
-		var seen: bool = tile.seen
-		var accessible: bool = Session.Dungeon.accessible(game.dungeon,i)
-		var name_value := "迷雾"
-		if seen or tile.scouted:
-			name_value = Session.Dungeon.TITLES[tile.kind]
-		if tile.flag:
-			name_value = "! 标记"
-		elif seen and tile.kind=="empty":
-			name_value = str(Session.Dungeon.danger(game.dungeon,i))
-		elif seen and tile.cleared and tile.kind!="entrance":
-			name_value += "\n已清理"
-		if i==game.map_position:
-			name_value = "● "+name_value
-		var cell := button(grid,name_value,func(): map_click(index))
-		cell.custom_minimum_size = Vector2(86,68)
-		cell.add_theme_font_size_override("font_size",17)
-		cell.tooltip_text = "已侦察，进入后才触发" if tile.scouted and not seen else ("可以抵达" if accessible else "先探索相邻区域")
-		var bg := "243948" if seen else ("192d3a" if accessible else "101923")
-		var style := box(bg,7)
-		style.border_color = Color("87d8c5") if i==game.map_position else Color("466677")
-		style.set_border_width_all(2 if accessible and not seen or i==game.map_position else 0)
-		cell.add_theme_stylebox_override("normal",style)
-		cell.gui_input.connect(func(event):
-			if event is InputEventMouseButton and event.pressed and event.button_index==MOUSE_BUTTON_RIGHT:
-				finish_action(game.flag_tile(index)))
+		var control := button(controls,("● " if map_mode==mode else "")+mode,func(): map_mode=mode; refresh(),mode=="侦察" and game.scouts<=0)
+		control.tooltip_text = {"探索":"进入亮边房间；已清理通道可安全快速通行。","标记":"点击未知房间插旗，再次点击取消；也可直接右键。","侦察":RESOURCE_HELP["侦察"]}[mode]
+	label(controls,"侦察 %d" % game.scouts,17,"83e0cf").tooltip_text = RESOURCE_HELP["侦察"]
+	atlas = ExplorationView.new()
+	atlas.session = game
+	atlas.font = font
+	atlas.mode = map_mode
+	atlas.previous_seen = map_seen.duplicate()
+	atlas.origin = map_origin
+	atlas.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_child(atlas)
+	var context := paragraph(column,"亮边房间可抵达 · 右键标记危险 · 数字统计周围八格","b9cace")
+	context.custom_minimum_size.y = 42
+	atlas.inspected.connect(func(value): context.text=value)
+	atlas.activated.connect(map_click)
+	atlas.flagged.connect(func(index): remember_map(); finish_action(game.flag_tile(index)))
 	var route := HBoxContainer.new()
-	route.add_theme_constant_override("separation",12)
 	column.add_child(route)
-	button(route,"返回入口",func(): finish_action(game.reveal_tile(0)))
-	button(route,"撤离结算 · %d金币" % game.run_gold,func(): finish_action(game.extract()),not game.can_extract())
-	paragraph(column,"宝箱：装备与金币 · 营火：恢复生命 · 事件：属性检定\n核心守卫位于右下角。可以随时回入口撤离；未撤离的本局收益仍有风险。")
+	button(route,"返回入口",func(): remember_map(); finish_action(game.reveal_tile(0))).tooltip_text = "沿已清理的通道安全返回入口，不会重触发事件。"
+	button(route,"撤离 · 结算%d金币" % game.run_gold,func(): finish_action(game.extract()),not game.can_extract()).tooltip_text = "在入口或击败核心后撤离，将本局收益存入永久资产。"
+	label(route,"目标：深入右下方核心",14,"c6b892")
+
+func remember_map() -> void:
+	map_seen.clear()
+	for i in range(game.dungeon.size()):
+		if game.dungeon[i].seen:
+			map_seen.append(i)
+	map_origin = game.map_position
 
 func map_click(index: int) -> void:
+	remember_map()
 	match map_mode:
 		"标记": finish_action(game.flag_tile(index))
 		"侦察": finish_action(game.scout_tile(index))
 		_: finish_action(game.reveal_tile(index))
+
+func show_help() -> void:
+	if is_instance_valid(help_window):
+		return
+	help_window = AcceptDialog.new()
+	help_window.title = "探索者手册 · 点击条目展开"
+	help_window.ok_button_text = "收起手册"
+	add_child(help_window)
+	var content := scrolling_column(help_window)
+	for key in RESOURCE_HELP:
+		foldout(content,key,RESOURCE_HELP[key])
+	foldout(content,"地图与危险数字","移动只沿上下左右相邻房间展开；数字统计周围八格最初的战斗或陷阱数量。\n清理危险后数字不减少。零危险通道自动展开，特殊房间进入时才触发。\n鼠标点选，右键插旗；也可聚焦地图后用方向键和回车操作。")
+	foldout(content,"卡牌与装备 Build","每回合抽5张。攻击/格挡类基础牌补充战意，强力卡消耗战意。\n已打出的牌在回合结束后才进弃牌堆；牌库空时洗入弃牌。\n攻击与破甲提高输出，防御/敏捷加强格挡，速度改善开局抽牌。\n移动力强化位移牌，意志增强心刃；韧性20提升留力格挡。\n研习购买与战后奖励只在本次探索生效，装备和附魔长期保留。")
+	foldout(content,"交易、强化与寻宝","仓库10×8格，装备可锁定防止误售。商店按每格金币估值。\n强化最多+5，每级基础属性+2；费用60起，每级增加40。\n附魔80起，每次增加40：重铸只替换独立槽，不动掉落词条。\n寻宝120金币；普通55%、魔法30%、稀有13%、史诗2%。\n连续9次未出稀有及以上，第10次保底；空间不足不扣款。")
+	help_window.confirmed.connect(close_help)
+	help_window.canceled.connect(close_help)
+	help_window.popup_centered(Vector2i(mini(640,int(size.x)-40),mini(630,int(size.y)-60)))
+
+func close_help() -> void:
+	if is_instance_valid(help_window):
+		help_window.queue_free()
+	help_window = null
+
+func foldout(parent: Node,title_value: String,text_value: String) -> void:
+	var column := panel(parent)
+	var title := button(column,"＋ "+title_value,func(): pass)
+	var details := paragraph(column,text_value,"b6cad4")
+	details.hide()
+	title.pressed.connect(func(): details.visible=not details.visible; title.text=("－ " if details.visible else "＋ ")+title_value)
+
+func notify_result(message: String,success: bool) -> void:
+	if is_instance_valid(feedback):
+		feedback.queue_free()
+	var popup := PanelContainer.new()
+	feedback = popup
+	popup.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	popup.z_index = 100
+	popup.add_theme_stylebox_override("panel",box("173a36" if success else "4b3033",9))
+	add_child(popup)
+	var text_label := paragraph(popup,("✓  " if success else "!  ")+message,"dbeadd")
+	text_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	text_label.custom_minimum_size.x = minf(440,size.x-60)
+	popup.position = Vector2((size.x-text_label.custom_minimum_size.x)/2,80)
+	popup.modulate.a = 0
+	var tween := popup.create_tween()
+	tween.tween_property(popup,"modulate:a",1.0,0.18)
+	tween.tween_interval(2.2)
+	tween.tween_property(popup,"modulate:a",0.0,0.4)
+	tween.tween_callback(popup.queue_free)
+
+func draw_relic() -> void:
+	if combat_busy:
+		return
+	if not game.draw_equipment():
+		finish_action(false)
+		return
+	# The result is saved before the purely visual reveal, so interruption cannot reroll it.
+	save_ok = game.save_game()
+	lock_combat(true)
+	var veil := ColorRect.new()
+	veil.color = Color(0.025,0.04,0.08,0.93)
+	veil.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	veil.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	veil.z_index = 90
+	add_child(veil)
+	var display := VBoxContainer.new()
+	display.position = size/2-Vector2(220,90)
+	display.custom_minimum_size.x = 440
+	veil.add_child(display)
+	var latest: Dictionary = game.draw_history[0]
+	var color: String = game.catalog.rarities[int(latest.rarity)].color
+	label(display,"遗物正在苏醒",18,"9cb6c5").horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var result := label(display,str(latest.name),34,color)
+	result.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	result.modulate.a = 0
+	label(display,str(game.catalog.rarities[int(latest.rarity)].name)+" · 已收入仓库",20,color).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var tween := veil.create_tween()
+	tween.tween_interval(0.25)
+	tween.tween_property(result,"modulate:a",1.0,0.45)
+	impact_flash(size/2,Color(color))
+	await tween.finished
+	await get_tree().create_timer(0.65).timeout
+	veil.queue_free()
+	lock_combat(false)
+	finish_action(true)
