@@ -145,7 +145,7 @@ jobs:
           else
             gh release create "$tag" --draft --target "$GITHUB_SHA" --title "地城拾遗 $tag" --notes-file release/release-notes.md
           fi
-          gh release upload "$tag" release/toy-dg-windows.zip release/toy-dg-launcher.zip release/toy-dg-web.zip release/update.json --clobber
+          gh release upload "$tag" release/toy-dg-windows.zip release/toy-dg-launcher.zip release/toy-dg-web.zip release/toy-dg-previews.zip release/update.json --clobber
           gh release edit "$tag" --draft=false --latest
 
   live-update:

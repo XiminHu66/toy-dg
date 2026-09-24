@@ -1,7 +1,9 @@
 extends Control
 const Session = preload("res://scripts/session.gd")
 const Inventory = preload("res://scripts/inventory.gd")
-const Board = preload("res://scripts/board.gd")
+const Arena = preload("res://scripts/arena.gd")
+const CardView = preload("res://scripts/card_view.gd")
+const Cards = preload("res://scripts/cards.gd")
 const InventoryView = preload("res://scripts/inventory_view.gd")
 const Rules = preload("res://scripts/rules.gd")
 var game := Session.new()
@@ -12,8 +14,9 @@ var header_stats: Label
 var selection := ""
 var selected_container := "bag"
 var target_id := ""
-var skill := "slash"
-var input_mode := "move"
+var selected_card := -1
+var camp_tab := "出征"
+var log_open := false
 var board: Control
 var item_details: RichTextLabel
 var item_buttons: HBoxContainer
@@ -58,7 +61,7 @@ func _ready() -> void:
 	title_column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title_column)
 	label(title_column,"地城拾遗",29,"eef3fa")
-	label(title_column,"RELIC / RUNNER     ·     封印矿井",12,"76b7b2")
+	label(title_column,"RELIC / RUNNER     ·     牌与遗物",12,"76b7b2")
 	header_stats = label(header,"",17,"e8cc99")
 	body = HBoxContainer.new()
 	body.add_theme_constant_override("separation",18)
@@ -66,7 +69,7 @@ func _ready() -> void:
 	page.add_child(body)
 	var footer_panel := PanelContainer.new()
 	footer_panel.add_theme_stylebox_override("panel",box("0e1b28",10))
-	footer_panel.custom_minimum_size.y = 108
+	footer_panel.custom_minimum_size.y = 65
 	page.add_child(footer_panel)
 	footer = RichTextLabel.new()
 	footer.bbcode_enabled = true
@@ -76,32 +79,60 @@ func _ready() -> void:
 	footer_panel.add_child(footer)
 	refresh()
 	if "--capture" in OS.get_cmdline_user_args():
-		await get_tree().create_timer(0.8).timeout
-		await RenderingServer.frame_post_draw
-		get_viewport().get_texture().get_image().save_png("res://build/screenshots/camp.png")
+		await capture_screen("camp")
+		camp_tab = "仓库"
+		refresh()
+		await capture_screen("warehouse")
+		camp_tab = "牌组"
+		refresh()
+		await capture_screen("deck")
 		game.start_run()
 		refresh()
-		await get_tree().create_timer(0.8).timeout
-		await RenderingServer.frame_post_draw
-		get_viewport().get_texture().get_image().save_png("res://build/screenshots/combat.png")
+		await capture_screen("combat")
+		selected_card = game.hand.find("strike")
+		refresh()
+		await capture_screen("targeting")
+		show_pile("抽牌堆",game.draw_pile)
+		await capture_screen("pile")
+		for child in get_children():
+			if child is AcceptDialog:
+				child.queue_free()
+		game.phase = "loot"
+		game.pending_loot = [game.make_item(0,3),game.make_item(3,2)]
+		game.card_rewards = ["reap","bastion","echo"]
+		refresh()
+		await capture_screen("loot")
 		print("CAPTURE_OK")
 		get_tree().quit()
 	if "--smoke" in OS.get_cmdline_user_args():
-		await get_tree().process_frame
 		game.start_run()
-		refresh()
-		await get_tree().process_frame
-		var rect := body.get_global_rect()
-		if rect.end.y > get_viewport_rect().size.y or rect.end.x > get_viewport_rect().size.x:
-			push_error("Interface body exceeds viewport")
-		for test_phase in ["event","loot","exit","camp"]:
+		for test_phase in ["combat","event","loot","exit","camp"]:
 			game.phase = test_phase
 			if test_phase == "loot":
-				game.pending_loot = [game.make_item(0,2),game.make_item(3,1)]
+				game.pending_loot = [game.make_item(0,3),game.make_item(3,2)]
+				game.card_rewards = ["reap","bastion","echo"]
 			refresh()
 			await get_tree().process_frame
+			await get_tree().process_frame
+			check_layout(test_phase)
+		for tab in ["出征","仓库","牌组"]:
+			camp_tab = tab
+			refresh()
+			await get_tree().process_frame
+			await get_tree().process_frame
+			check_layout(tab)
 		print("UI_SMOKE_OK")
 		get_tree().quit()
+
+func capture_screen(name_value: String) -> void:
+	await get_tree().create_timer(0.4).timeout
+	await RenderingServer.frame_post_draw
+	get_viewport().get_texture().get_image().save_png("res://build/screenshots/"+name_value+".png")
+
+func check_layout(phase_name: String) -> void:
+	var rect := body.get_global_rect()
+	if rect.end.y > get_viewport_rect().size.y-65 or rect.end.x > get_viewport_rect().size.x:
+		push_error("Interface exceeds viewport: "+phase_name+" "+str(rect))
 
 func box(hex: String, radius: int = 12) -> StyleBoxFlat:
 	var result := StyleBoxFlat.new()
@@ -158,23 +189,28 @@ func refresh() -> void:
 	bag_view = null
 	stash_view = null
 	header_stats.text = "%s   /   金币 %d   /   本局 %d" % ["营地" if game.phase == "camp" else "探索中",game.gold,game.run_gold]
-	var left := panel(body,true)
-	var right_wrap := ScrollContainer.new()
-	right_wrap.custom_minimum_size.x = 375
-	right_wrap.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	right_wrap.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	body.add_child(right_wrap)
-	var right := panel(right_wrap)
-	right.get_parent().size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	match game.phase:
-		"camp": camp(left)
-		"combat": combat(left)
-		"loot": loot(left)
-		"event": event_room(left)
-		"exit": exit_room(left)
-	build_right(right)
+	item_details = null
+	item_buttons = null
+	if game.phase == "combat":
+		var full := panel(body,true)
+		combat(full)
+	else:
+		var left := panel(body,true)
+		match game.phase:
+			"camp": camp(left)
+			"loot": loot(left)
+			"event": event_room(left)
+			"exit": exit_room(left)
+		var right_wrap := ScrollContainer.new()
+		right_wrap.custom_minimum_size.x = 350
+		right_wrap.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		right_wrap.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		body.add_child(right_wrap)
+		var right := panel(right_wrap)
+		right.get_parent().size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		build_right(right)
 	footer.clear()
-	for line in game.log_lines.slice(maxi(0,game.log_lines.size()-5)):
+	for line in game.log_lines.slice(maxi(0,game.log_lines.size()-2)):
 		footer.append_text("[color=#b4c5d5]"+str(line)+"[/color]\n")
 	if not toast.is_empty():
 		footer.append_text("[color=#f2c981]"+toast+"[/color]\n")
@@ -190,87 +226,210 @@ func finish_action(success: bool) -> void:
 		board.animate()
 
 func camp(column: VBoxContainer) -> void:
-	label(column,"01 / 整备营地",13,"68cdb9")
-	label(column,"下一次出发，带回更好的答案。",24,"e8edf5")
-	paragraph(column,"仓库里的影步指环可以解锁位移。选择装备后可穿戴、出售或转移；拖拽调整位置，按 R 旋转。")
+	var tabs := HBoxContainer.new()
+	tabs.add_theme_constant_override("separation",10)
+	column.add_child(tabs)
+	for tab in ["出征","仓库","牌组"]:
+		button(tabs,("● " if camp_tab==tab else "")+tab,func(): camp_tab=tab; refresh())
+	if camp_tab == "仓库":
+		label(column,"遗物档案 / 仓库",25,"e9d2aa")
+		paragraph(column,"选择查看词条与估值；拖拽整理，R 旋转。右侧操作可穿戴、出售或转移。")
+		var scroll := ScrollContainer.new()
+		scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		column.add_child(scroll)
+		stash_view = make_inventory(scroll,game.stash,Session.STASH,49,"stash")
+		return
+	if camp_tab == "牌组":
+		label(column,"出征牌组 · %d 张" % game.starting_deck().size(),25,"e9d2aa")
+		paragraph(column,"基础牌 + 武器专属牌 + 特殊装备牌。战后获得的卡牌仅在本次探索中保留，装备长期保留。")
+		deck_grid(column,game.starting_deck())
+		return
+	label(column,"封印矿井",32,"f1e8d8")
+	paragraph(column,"在遗物与回声之间，寻找下一种可能。", "b4c6d4")
+	var art := TextureRect.new()
+	art.texture = load("res://assets/art/sealed-sanctum.webp")
+	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	art.custom_minimum_size.y = 190
+	art.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_child(art)
+	var itinerary := HBoxContainer.new()
+	itinerary.add_theme_constant_override("separation",18)
+	column.add_child(itinerary)
+	for entry in [["01","入口遭遇"],["02","封印匣"],["03","核心守卫"],["04","带宝撤离"]]:
+		var step := panel(itinerary,true)
+		label(step,entry[0],23,"68cdb9")
+		label(step,entry[1],15,"c6cfdc")
+	paragraph(column,"3 能量 · 每回合抽 5 张 · 可见敌人意图
+装备决定属性与专属卡牌；战后择牌、拾取装备，再决定是否深入。")
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation",10)
+	row.add_theme_constant_override("separation",14)
 	column.add_child(row)
-	button(row,"进入封印矿井  →",func(): target_id=""; finish_action(game.start_run()))
+	var go := button(row,"开始探索  →",func(): selected_card=-1; target_id=""; finish_action(game.start_run()))
+	go.custom_minimum_size = Vector2(250,52)
+	go.add_theme_stylebox_override("normal",box("356b64",8))
 	var cost := 60 + int(game.equipment.weapon.level)*40
-	button(row,"强化武器  ·  %d 金币" % cost,func(): finish_action(game.upgrade_weapon()),game.gold<cost or game.equipment.weapon.level>=3)
-	label(column,"仓库  /  10 × 8",16,"a4b9cc")
+	button(row,"强化武器 · %d 金币" % cost,func(): finish_action(game.upgrade_weapon()),game.gold<cost or game.equipment.weapon.level>=3)
+
+func card_summary(id: String) -> String:
+	var card: Dictionary = Cards.DATA[id]
+	if card.has("attack"):
+		return "攻击 ×%.0f%%" % (float(card.attack)*100)
+	if card.has("block"):
+		return "获得 %d 格挡" % game.card_block(card)
+	return "抽 %d 张" % card.draw if card.has("draw") else "获得 2 能量"
+
+func make_card(parent: Node,id: String,action: Callable,index: int = -1,disabled_value: bool = false) -> Button:
+	var view := CardView.new()
+	view.card_id = id
+	view.font = font
+	view.summary = card_summary(id)
+	view.ordinal = index+1
+	view.chosen = index>=0 and index==selected_card
+	view.disabled = disabled_value
+	view.pressed.connect(action)
+	parent.add_child(view)
+	return view
+
+func deck_grid(parent: Node,ids: Array) -> void:
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	column.add_child(scroll)
-	stash_view = make_inventory(scroll,game.stash,Session.STASH,43,"stash")
-	paragraph(column,"探索路线：入口守卫 → 封印匣事件 → 核心战斗 → 撤离。战斗结束后可提前撤离。")
-	label(column,"原型美术 · 战斗与经济验证版",12,"677f91")
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	parent.add_child(scroll)
+	var grid := GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation",12)
+	grid.add_theme_constant_override("v_separation",10)
+	scroll.add_child(grid)
+	for id in ids:
+		make_card(grid,id,func(): pass)
+
+func show_pile(title_value: String,ids: Array) -> void:
+	var window := AcceptDialog.new()
+	window.title = title_value
+	window.ok_button_text = "返回"
+	add_child(window)
+	var margin := MarginContainer.new()
+	margin.offset_bottom = -50
+	window.add_child(margin)
+	deck_grid(margin,ids)
+	window.confirmed.connect(window.queue_free)
+	window.canceled.connect(window.queue_free)
+	window.popup_centered(Vector2i(760,550))
 
 func combat(column: VBoxContainer) -> void:
-	var row := HBoxContainer.new()
-	column.add_child(row)
-	var text_value := "02 / 矿井入口" if game.room == 0 else "04 / 封印核心"
-	var route := label(row,text_value,18,"e5d1ad")
-	route.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	label(row,"回合 %d   ·   AP %d   ·   移动力 %d" % [game.round_no,game.ap,game.movement],16,"69d7bd")
-	var instructions := "点击空格移动，点击敌人选择目标。金色短线表示朝向；从背面攻击增伤20%。"
-	paragraph(column,instructions)
-	board = Board.new()
+	var top := HBoxContainer.new()
+	column.add_child(top)
+	var title := label(top,"矿井入口" if game.room==0 else "封印核心",22,"e5d1ad")
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label(top,"第 %d 回合" % game.round_no,17,"c8d2e3")
+	button(top,"牌组 %d" % game.run_deck.size(),func(): show_pile("本次探索牌组",game.run_deck))
+	button(top,"行囊",show_bag)
+	button(top,"战斗记录",show_log)
+	board = Arena.new()
 	board.session = game
 	board.font = font
-	board.mode = input_mode
 	board.selected = target_id
+	if selected_card>=0 and selected_card<game.hand.size():
+		board.preview_card = game.hand[selected_card]
 	board.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	board.cell_clicked.connect(on_cell)
+	board.target_clicked.connect(on_target)
 	column.add_child(board)
 	var actions := HBoxContainer.new()
-	actions.add_theme_constant_override("separation",7)
+	actions.add_theme_constant_override("separation",14)
 	column.add_child(actions)
-	button(actions,"移动",func(): input_mode="move"; refresh())
-	for entry in [["slash","斩击"],["rupture","裂伤"],["dash","突进"]]:
-		var key: String = entry[0]
-		button(actions,("● " if skill==key else "")+entry[1],func(): skill=key; input_mode="move"; refresh())
-	button(actions,"影步",func(): input_mode="shadow"; refresh(),game.player.shadowstep<1 or game.player.step_used or game.ap<1)
-	button(actions,"防御",func(): finish_action(game.guard()),game.ap<1 or game.player.guard)
-	button(actions,"药 ×%d" % game.potions,func(): finish_action(game.heal()),game.ap<1 or game.potions<1 or game.player.hp>=game.player.max_hp)
-	button(actions,"结束回合",func(): finish_action(game.end_turn()))
-	var selected := game.unit_by_id(target_id)
-	if not selected.is_empty() and selected.hp > 0:
-		var preview := HBoxContainer.new()
-		column.add_child(preview)
-		var back := Rules.behind(game.player.position,selected.position,selected.facing)
-		var coefficient := 0.75 if skill=="rupture" else (1.1 if skill=="dash" else 1.0)
-		var multiplier := 1.2 if back else 1.0
-		var low := Rules.damage(game.player.attack*coefficient+2,selected.defense,game.player.penetration,multiplier)
-		var high := Rules.damage(game.player.attack*coefficient+12,selected.defense,game.player.penetration,multiplier)
-		var summary := "%s  HP %d  韧性 %d\n命中 %d%% · 伤害 %d–%d · %s" % [selected.name,selected.hp,selected.toughness,Rules.chance(game.player,selected),low,high,"背面 ×1.2" if back else "正面／侧面"]
-		var info := label(preview,summary,14,"e8c37e")
-		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		button(preview,"执行技能 · 2 AP",func(): finish_action(game.strike(target_id,skill)),game.ap<2)
-	else:
-		label(column,"敌人意图：向你接近并近战攻击（行动时重新瞄准）。选择目标查看命中率。",14,"91aabc")
+	var energy_label := label(actions,"%d / 3  能量" % game.energy,26,"83e0cf")
+	energy_label.custom_minimum_size.x = 160
+	var hint := label(actions,"选择攻击牌后点击敌人；技能牌直接生效。",15,"bcc8d9")
+	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if selected_card>=0 and selected_card<game.hand.size():
+		hint.text = "已选择「%s」· 点击敌人出牌 / Esc 取消" % Cards.DATA[game.hand[selected_card]].name
+	elif game.energy==0:
+		hint.text = "能量已用完，可使用 0 费牌或结束回合。"
+	if game.momentum>0:
+		hint.text += "  蓄势 +%d%%" % int(game.momentum*100)
+	button(actions,"疗伤药 ×%d" % game.potions,func(): selected_card=-1; finish_action(game.heal()),game.energy<1 or game.potions<1 or game.player.hp>=game.player.max_hp)
+	var end := button(actions,"结束回合  [空格]",func(): selected_card=-1; finish_action(game.end_turn()))
+	end.add_theme_stylebox_override("normal",box("70554a",8))
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size.y = 234
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	column.add_child(scroll)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation",10)
+	scroll.add_child(row)
+	for i in range(game.hand.size()):
+		var index := i
+		var card: Dictionary = Cards.DATA[game.hand[i]]
+		make_card(row,game.hand[i],func(): select_card(index),i,game.energy<int(card.cost) or game.player.hp<=int(card.get("hp_cost",0)))
+	var piles := HBoxContainer.new()
+	piles.add_theme_constant_override("separation",12)
+	column.add_child(piles)
+	button(piles,"抽牌堆 %d" % game.draw_pile.size(),func(): var cards: Array=game.draw_pile.duplicate(); cards.sort(); show_pile("抽牌堆 · 不显示顺序",cards))
+	button(piles,"弃牌堆 %d" % game.discard_pile.size(),func(): show_pile("弃牌堆",game.discard_pile))
+	button(piles,"消耗区 %d" % game.exhaust_pile.size(),func(): show_pile("消耗区 · 本场不再抽到",game.exhaust_pile))
+	label(piles,"快捷键 1–9 选牌 · Esc 取消 · 手牌上限 10",13,"7e96ac")
 
-func on_cell(point: Vector2i) -> void:
-	for target in game.enemies:
-		if target.hp > 0 and target.position == point:
-			target_id = target.id
-			refresh()
-			return
-	if input_mode == "shadow":
-		finish_action(game.shadowstep(point))
+func select_card(index: int) -> void:
+	if index<0 or index>=game.hand.size():
+		return
+	var card: Dictionary = Cards.DATA[game.hand[index]]
+	if card.has("attack"):
+		selected_card = -1 if selected_card==index else index
+		refresh()
 	else:
-		finish_action(game.move_player(point))
+		selected_card = -1
+		finish_action(game.play_card(index))
+
+func on_target(id: String) -> void:
+	target_id = id
+	if selected_card>=0:
+		var index := selected_card
+		selected_card = -1
+		finish_action(game.play_card(index,id))
+	else:
+		refresh()
+
+func show_log() -> void:
+	var dialog := AcceptDialog.new()
+	dialog.title = "探索记录"
+	dialog.dialog_text = "\n".join(game.log_lines.slice(maxi(0,game.log_lines.size()-18)))
+	add_child(dialog)
+	dialog.confirmed.connect(dialog.queue_free)
+	dialog.canceled.connect(dialog.queue_free)
+	dialog.popup_centered(Vector2i(820,530))
+
+func show_bag() -> void:
+	var dialog := AcceptDialog.new()
+	dialog.title = "随身行囊 · 战斗中只读"
+	add_child(dialog)
+	var column := VBoxContainer.new()
+	dialog.add_child(column)
+	label(column,"空间管理在战斗结束后开放。装备与金币均保持原规则。",14)
+	make_inventory(column,game.bag,Session.BAG,50,"bag")
+	dialog.confirmed.connect(dialog.queue_free)
+	dialog.canceled.connect(dialog.queue_free)
+	dialog.popup_centered(Vector2i(650,410))
 
 func loot(column: VBoxContainer) -> void:
 	label(column,"战利品 / FIELD RECOVERY",13,"68cdb9")
-	label(column,"每一格，都值得权衡。",28,"edf1f7")
+	label(column,"战利品与新的可能",25,"edf1f7")
 	paragraph(column,"右侧背包中的青色标记代表本局新获得的物品。撤离才能保住它们；继续探索会放弃地上未拾取的物品。")
+	if not game.card_rewards.is_empty():
+		label(column,"战术领悟 · 三选一加入本局牌组（可跳过）",17,"c4a5ef")
+		var rewards := HBoxContainer.new()
+		rewards.add_theme_constant_override("separation",12)
+		column.add_child(rewards)
+		for id in game.card_rewards:
+			make_card(rewards,id,func(): finish_action(game.choose_reward(id)))
+	var gear_row := HBoxContainer.new()
+	gear_row.add_theme_constant_override("separation",12)
+	column.add_child(gear_row)
 	for item in game.pending_loot:
-		var card := panel(column)
+		var card := panel(gear_row,true)
 		var color: String = game.catalog.rarities[int(item.rarity)].color
-		label(card,"%s · %s" % [game.catalog.rarities[int(item.rarity)].name,item.name],21,color)
-		paragraph(card,item_description(item),"c2cbd6")
+		label(card,"%s · %s" % [game.catalog.rarities[int(item.rarity)].name,item.name],18,color)
+		paragraph(card,item_description(item).replace("\n","  "),"c2cbd6")
 		var id: String = item.id
 		button(card,"收入背包  ·  %d × %d" % [item.w,item.h],func(): finish_action(game.take_loot(id)))
 	if game.pending_loot.is_empty():
@@ -304,6 +463,7 @@ func build_right(column: VBoxContainer) -> void:
 	var stats: Dictionary = game.player
 	label(column,"生命 %d / %d" % [stats.hp,stats.max_hp],19,"6ed8bf")
 	paragraph(column,"攻击 %d   防御 %d   敏捷 %d\n速度 %d   移动力 %d   破甲 %d\n暴击 %d%%   暴击倍率 %.2f\n感知 %d   意志 %d" % [stats.attack,stats.defense,stats.agility,stats.speed,stats.movement,stats.penetration,stats.crit,stats.crit_damage/100.0,stats.perception,stats.will])
+	paragraph(column,"防御／敏捷增强格挡 · 速度增加首回合抽牌\n移动力强化掠影／影步 · 意志增强心刃", "718ca2")
 	for slot in game.equipment:
 		var item: Dictionary = game.equipment[slot]
 		label(column,"▸ %s +%d" % [item.name,item.level],14,str(game.catalog.rarities[int(item.rarity)].color))
@@ -397,5 +557,14 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			if not item.is_empty():
 				var items: Array = game.bag if selected_container=="bag" else game.stash
 				finish_action(Inventory.move(items,selection,Vector2i(int(item.x),int(item.y)),Session.BAG if selected_container=="bag" else Session.STASH,true))
-		if event.keycode == KEY_SPACE and game.phase == "combat":
-			finish_action(game.end_turn())
+		if game.phase == "combat":
+			if event.keycode == KEY_SPACE:
+				selected_card = -1
+				finish_action(game.end_turn())
+			elif event.keycode == KEY_ESCAPE:
+				selected_card = -1
+				refresh()
+			elif event.keycode>=KEY_1 and event.keycode<=KEY_9:
+				select_card(event.keycode-KEY_1)
+			elif event.keycode==KEY_0:
+				select_card(9)

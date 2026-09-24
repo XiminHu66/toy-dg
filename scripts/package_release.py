@@ -55,13 +55,16 @@ def package(version, commit, root=Path(".")):
         for path in sorted((root / "build/web").glob("*")):
             if path.is_file() and not path.name.endswith(".import") and not path.name.startswith("."):
                 archive.write(path, path.name)
+    with zipfile.ZipFile(target / "toy-dg-previews.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted((root / "build/screenshots").glob("*.png")):
+            archive.write(path, path.name)
     (target / "release-notes.md").write_text(
         f"# 地城拾遗 {version}\n\n"
         f"源码：{commit}\n\n"
         "首次使用请下载 `toy-dg-launcher.zip`，解压运行 `ToyDG-Launcher.exe`。"
         "之后启动器会自动检查并安装新游戏版本；断网可启动已安装版本。\n\n"
         "`toy-dg-windows.zip` 是可直接运行的单版本包；`toy-dg-web.zip` 是需要HTTP托管的网页包。\n\n"
-        "当前仍是占位美术的玩法原型。自动更新保留存档；源码、规则检查与导出通过后才发布。\n",
+        "卡牌战斗与界面重构版：3能量、抽牌、敌人意图、装备专属卡与战后三选一。新增原创AI场景与角色图。自动迁移旧存档并保留profile.json.v1备份；旧战斗从当前房间重新开始。存档v2不能直接供旧客户端读取。\n",
         encoding="utf-8",
     )
     return manifest

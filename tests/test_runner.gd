@@ -74,34 +74,76 @@ func test_inventory() -> void:
 func test_combat() -> void:
 	var s := Session.new(2)
 	s.start_run()
-	check(s.player_turn and s.ap==2,"player turn reached through speed queue")
-	var old_position: Vector2i = s.player.position
-	var old_movement: int = s.movement
-	check(not s.move_player(Vector2i(3,2)),"wall cannot be entered")
-	check(s.player.position==old_position and s.movement==old_movement,"invalid move has no cost")
-	var p := s.path(s.player.position,Vector2i(2,3))
-	check(p.size()==1,"shortest legal path")
-	check(s.move_player(Vector2i(2,3)) and s.movement==old_movement-1,"movement consumes exact path cost")
-	check(not s.strike(s.enemies[0].id,"slash") and s.ap==2,"out of range attack costs nothing")
-	s.player.position = Vector2i(1,2)
-	s.enemies[0].position = Vector2i(5,2)
-	check(not s.strike(s.enemies[0].id,"dash"),"dash cannot pass through wall")
-	s.player.position = Vector2i(1,0)
-	s.enemies[0].position = Vector2i(4,0)
-	check(s.strike(s.enemies[0].id,"dash"),"clear straight dash")
-	check(s.player.position==Vector2i(3,0) and s.ap==0,"dash ends beside enemy and consumes AP")
-	s.ap = 2
-	s.player.shadowstep = 1
-	check(s.shadowstep(Vector2i(2,1)),"shadowstep with equipment skill")
-	check(not s.shadowstep(Vector2i(1,1)),"shadowstep limited once per turn")
-	check(s.guard() and s.ap==0,"guard spends AP")
-	check(not s.guard(),"guard cannot stack")
+	check(s.player_turn and s.energy==3 and s.hand.size()==5,"first turn draws five and grants three energy")
+	check(s.run_deck.has("heavy"),"sword contributes equipment card")
+	check(s.draw_pile.size()+s.hand.size()==s.run_deck.size(),"opening deck conservation")
+	var target: Dictionary = s.enemies[0]
+	s.hand = ["strike","guard","focus","break","surge"]
+	s.player.crit = 0
+	var before := s.snapshot()
+	check(not s.play_card(0,"missing"),"invalid target rejected")
+	check(s.snapshot()==before,"invalid card play has no cost and consumes no RNG")
+	var predicted := s.card_damage(Session.Cards.DATA.strike,target)
+	var health := int(target.hp)
+	check(s.play_card(0,target.id),"attack plays")
+	check(target.hp==health-predicted and s.energy==2,"noncritical hit equals preview")
+	check(s.play_card(0),"guard plays")
+	check(s.player.block==s.card_block(Session.Cards.DATA.guard),"armor and agility contribute to block")
+	check(s.play_card(0),"zero cost focus plays")
+	check(s.exhaust_pile.has("focus") and not s.discard_pile.has("focus"),"exhaust excludes reshuffle")
+	before = s.snapshot()
+	check(not s.play_card(s.hand.find("break"),target.id),"insufficient energy rejected")
+	check(s.snapshot()==before,"failed energy check atomic")
+	s.hand = ["surge"]
+	s.player.hp = 5
+	check(not s.play_card(0),"HP cost cannot kill player")
+	s.player.hp = 60
+	check(s.play_card(0) and s.energy==3 and s.player.hp==55,"surge pays HP for energy")
+	s.hand = ["dash","strike"]
+	s.energy = 3
+	s.play_card(0)
+	check(s.momentum>0 and s.card_damage(Session.Cards.DATA.strike,target)>predicted,"movement grants next-attack bonus")
+	s.play_card(0,target.id)
+	check(s.momentum==0,"momentum consumed on attack")
+	s.hand = ["break"]
+	s.energy = 3
+	target.hp = 100
+	target.toughness = 5
+	s.play_card(0,target.id)
+	check(target.broken and target.vulnerable==2,"break applies stagger and vulnerability")
+	check(s.intent_damage(target)==int(target.intent.damage*0.5),"stagger updates visible damage")
 	s.phase = "event"
-	check(not s.move_player(Vector2i(1,1)),"no combat movement in event")
+	check(not s.play_card(0),"cards unavailable outside combat")
 	s.resolve_event("perception")
-	var state := s.snapshot()
-	check(not s.resolve_event("will"),"event cannot be rerolled")
-	check(s.snapshot()==state,"event repeat cannot mutate state")
+	before = s.snapshot()
+	check(not s.resolve_event("will") and s.snapshot()==before,"event cannot be rerolled")
+	var fresh := Session.new(99)
+	fresh.start_run()
+	fresh.draw_pile.clear()
+	fresh.hand.clear()
+	fresh.discard_pile = ["guard","strike"]
+	fresh.exhaust_pile = ["focus"]
+	fresh.draw_cards(5)
+	check(fresh.hand.size()==2 and fresh.discard_pile.is_empty(),"empty draw pile reshuffles only discard")
+	check(not fresh.hand.has("focus"),"exhaust never returns")
+	fresh.hand = []
+	for _i in range(15):
+		fresh.draw_pile.append("strike")
+	fresh.draw_cards(15)
+	check(fresh.hand.size()==10,"hand limit ten")
+	fresh.player.block = 99
+	fresh.retain_block = false
+	fresh.end_turn()
+	check(fresh.player.block==0 and fresh.energy==3,"block expires and energy refreshes at turn start")
+	fresh.player.block = 99
+	fresh.retain_block = true
+	fresh.end_turn()
+	check(fresh.player.block>0 and not fresh.retain_block,"bastion retains block for one transition")
+	fresh.player.hp = 1
+	fresh.player.block = 0
+	fresh.enemies[0].intent = {"name":"test","damage":20,"hits":1,"block":0,"bleed":0}
+	fresh.end_turn()
+	check(fresh.phase=="camp","enemy lethal damage returns to camp")
 
 func test_economy() -> void:
 	var s := Session.new(3)
@@ -133,12 +175,22 @@ func test_economy() -> void:
 func test_save() -> void:
 	var s := Session.new(4)
 	s.start_run()
-	s.move_player(Vector2i(2,3))
+	s.end_turn()
 	var data: Variant = JSON.parse_string(JSON.stringify(s.snapshot()))
 	var restored := Session.new(999)
 	check(restored.restore(data),"JSON save restores")
-	check(restored.player.position==s.player.position and restored.movement==s.movement,"combat position and resources restored")
+	check(restored.hand==s.hand and restored.draw_pile==s.draw_pile and restored.energy==s.energy,"card zones and energy restored")
 	check(restored.rng.randi()==s.rng.randi(),"64-bit RNG state survives JSON round trip")
+	var legacy: Dictionary = s.snapshot()
+	legacy.version = 1
+	for key in ["run_deck","draw_pile","hand","discard_pile","exhaust_pile","card_rewards","energy","momentum","retain_block"]:
+		legacy.erase(key)
+	check(restored.restore(legacy),"v1 combat migrates")
+	check(restored.gold==s.gold and restored.equipment==s.equipment and restored.player.hp==s.player.hp,"migration preserves economy equipment and health")
+	check(restored.round_no==1 and restored.hand.size()==5,"legacy encounter restarts as cards")
+	var corrupt: Dictionary = s.snapshot()
+	corrupt.hand.append("invented")
+	check(not restored.restore(corrupt),"unknown card save rejected")
 	data.version = 100
 	check(not restored.restore(data),"future version rejected")
 	data = JSON.parse_string(JSON.stringify(s.snapshot()))
@@ -168,23 +220,27 @@ func test_full_run() -> void:
 		while s.phase != "exit" and turns < 100:
 			turns += 1
 			if s.phase == "combat":
-				var target: Dictionary = {}
-				for enemy in s.enemies:
-					if enemy.hp>0:
-						target = enemy
+				var plays := 0
+				while s.phase=="combat" and plays<20:
+					var target_id := ""
+					for enemy in s.enemies:
+						if enemy.hp>0:
+							target_id = enemy.id
+							break
+					var played := false
+					for i in range(s.hand.size()):
+						if s.play_card(i,target_id):
+							played = true
+							break
+					plays += 1
+					if not played:
 						break
-				var best: Array = []
-				if s.distance(s.player.position,target.position)>1:
-					for direction in Session.DIRECTIONS:
-						var route := s.path(s.player.position,target.position+direction)
-						if not route.is_empty() and (best.is_empty() or route.size()<best.size()):
-							best = route
-					if not best.is_empty():
-						s.move_player(best[mini(best.size(),s.movement)-1])
-				s.strike(target.id,"rupture")
 				if s.phase=="combat":
 					s.end_turn()
 			elif s.phase=="loot":
+				if not s.card_rewards.is_empty():
+					var reward: String = s.card_rewards[0]
+					check(s.choose_reward(reward) and not s.choose_reward(reward),"card reward cannot be claimed twice")
 				for item in s.pending_loot.duplicate():
 					s.take_loot(item.id)
 				s.continue_route()

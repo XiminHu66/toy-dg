@@ -5,7 +5,18 @@ const BOARD := Vector2i(8,6)
 const BAG := Vector2i(6,5)
 const STASH := Vector2i(10,8)
 const DIRECTIONS := [Vector2i.LEFT,Vector2i.RIGHT,Vector2i.UP,Vector2i.DOWN]
-const SAVE_VERSION := 1
+const SAVE_VERSION := 2
+const Cards = preload("res://scripts/cards.gd")
+
+var run_deck: Array = []
+var draw_pile: Array = []
+var hand: Array = []
+var discard_pile: Array = []
+var exhaust_pile: Array = []
+var card_rewards: Array = []
+var energy := 3
+var momentum := 0.0
+var retain_block := false
 
 var rng := RandomNumberGenerator.new()
 var catalog: Dictionary
@@ -47,7 +58,7 @@ func _init(seed_value: int = -1) -> void:
 	charm.affixes = [{"key":"shadowstep","label":"技能：影步","value":1}]
 	Inventory.add(stash,charm,STASH)
 	player = build_player()
-	note("欢迎回来，拾遗者。仓库中的指环可解锁影步；整备后进入封印矿井。")
+	note("欢迎回来，拾遗者。仓库中的指环可解锁影步；整备后进入封印矿井。装备会为牌组提供专属卡牌。")
 
 func note(message: String) -> void:
 	log_lines.append(message)
@@ -82,7 +93,7 @@ func make_item(base_index: int = -1, rarity: int = -1) -> Dictionary:
 	return item
 
 func build_player() -> Dictionary:
-	var stats := {"id":"player","name":"凛 · 拾遗者","hp":90,"max_hp":90,"attack":12,"defense":6,"agility":12,"speed":12,"movement":4,"crit":20,"crit_damage":150,"penetration":0,"toughness":14,"perception":60,"will":55,"bleed":0,"shadowstep":0,"position":Vector2i(1,3),"facing":Vector2i.RIGHT,"bleeds":[],"broken":false,"guard":false,"guarded_round":-1,"step_used":false}
+	var stats := {"id":"player","name":"凛 · 拾遗者","hp":90,"max_hp":90,"attack":12,"defense":6,"agility":12,"speed":12,"movement":4,"crit":20,"crit_damage":150,"penetration":0,"toughness":14,"perception":60,"will":55,"bleed":0,"shadowstep":0,"position":Vector2i(1,3),"facing":Vector2i.RIGHT,"bleeds":[],"broken":false,"guard":false,"guarded_round":-1,"step_used":false,"block":0}
 	for item in equipment.values():
 		for key in ["attack","defense","hp"]:
 			if item.has(key):
@@ -105,69 +116,99 @@ func start_run() -> bool:
 	event_used = false
 	potions = 2
 	pending_loot.clear()
+	run_deck = starting_deck()
+	card_rewards.clear()
 	start_encounter()
 	return true
 
+func starting_deck() -> Array:
+	var result: Array = Cards.STARTER.duplicate()
+	result.append("quick" if equipment.weapon.key == "dagger" else "heavy")
+	if build_player().shadowstep > 0:
+		result.append("shadowstep")
+	return result
+
+func shuffle_cards(cards: Array) -> void:
+	for i in range(cards.size()-1,0,-1):
+		var j := rng.randi_range(0,i)
+		var value: Variant = cards[i]
+		cards[i] = cards[j]
+		cards[j] = value
+
+func draw_cards(count: int) -> void:
+	for _i in range(count):
+		if hand.size() >= 10:
+			break
+		if draw_pile.is_empty():
+			draw_pile = discard_pile.duplicate()
+			discard_pile.clear()
+			shuffle_cards(draw_pile)
+		if draw_pile.is_empty():
+			break
+		hand.append(draw_pile.pop_back())
+
 func start_encounter() -> void:
 	phase = "combat"
-	player.position = Vector2i(1,3)
-	player.facing = Vector2i.RIGHT
 	player.bleeds = []
+	player.block = 0
 	player.broken = false
 	player.toughness = player.max_toughness
-	walls = [Vector2i(3,1),Vector2i(3,2),Vector2i(5,4)]
+	walls.clear()
+	turn_queue.clear()
 	enemies.clear()
 	if room == 0:
 		enemies.append(enemy("watcher","铜壳守卫",Vector2i(5,2),46,11,8,8))
 		enemies.append(enemy("crawler","裂隙猎犬",Vector2i(6,4),32,9,3,14))
 	else:
 		enemies.append(enemy("warden","遗迹监守者",Vector2i(6,2),85,15,18,9))
-		enemies.append(enemy("drone","符文浮游机",Vector2i(5,4-1),28,10,4,11))
+		enemies.append(enemy("drone","符文浮游机",Vector2i(5,3),28,10,4,11))
+	if run_deck.is_empty():
+		run_deck = starting_deck()
+	draw_pile = run_deck.duplicate()
+	hand.clear()
+	discard_pile.clear()
+	exhaust_pile.clear()
+	shuffle_cards(draw_pile)
 	last_result = {}
 	round_no = 0
-	note("进入%s。敌人会在行动时追踪你；墙体阻挡移动与攻击。" % ("矿井入口" if room == 0 else "封印核心"))
+	retain_block = false
+	note("进入%s。观察敌人意图，点击手牌，再点击目标出牌。" % ("矿井入口" if room == 0 else "封印核心"))
 	begin_round()
-	advance_turns()
 
 func enemy(id: String, name_value: String, pos: Vector2i, health: int, attack: int, defense: int, speed: int) -> Dictionary:
-	return {"id":id,"name":name_value,"position":pos,"facing":Vector2i.LEFT,"hp":health,"max_hp":health,"attack":attack,"defense":defense,"speed":speed,"agility":8,"crit":10,"crit_damage":150,"penetration":0,"movement":2,"toughness":10,"max_toughness":10,"bleeds":[],"broken":false,"guard":false,"guarded_round":-1,"bleed":0}
+	return {"id":id,"name":name_value,"position":pos,"facing":Vector2i.LEFT,"hp":health,"max_hp":health,"attack":attack,"defense":defense,"speed":speed,"agility":8,"crit":10,"crit_damage":150,"penetration":0,"movement":2,"toughness":10,"max_toughness":10,"bleeds":[],"broken":false,"guard":false,"guarded_round":-1,"bleed":0,"block":0,"vulnerable":0,"intent":{}}
 
 func begin_round() -> void:
 	round_no += 1
-	var units: Array = [player]
+	energy = 3
+	ap = energy
+	momentum = 0.0
+	if not retain_block:
+		player.block = 0
+	retain_block = false
+	player_turn = true
+	draw_cards(5 + (clampi(int((player.speed-12)/3),0,2) if round_no == 1 else 0))
 	for target in enemies:
 		if target.hp > 0:
-			units.append(target)
-	units.sort_custom(func(a,b): return a.speed > b.speed if a.speed != b.speed else str(a.id) < str(b.id))
-	turn_queue.clear()
-	for unit in units:
-		turn_queue.append(unit.id)
+			target.intent = make_intent(target)
 
-func advance_turns() -> void:
-	player_turn = false
-	while phase == "combat":
-		if turn_queue.is_empty():
-			begin_round()
-		var next_id: String = turn_queue.pop_front()
-		if next_id == "player":
-			if player.broken:
-				player.broken = false
-				player.toughness = player.max_toughness
-				note("你从失衡中恢复，本回合行动点减半。")
-				ap = 1
-			else:
-				ap = 2
-			movement = int(player.movement)
-			player.guard = false
-			player.step_used = false
-			player_turn = true
-			return
-		var target := unit_by_id(next_id)
-		if target.is_empty() or target.hp <= 0:
-			continue
-		enemy_turn(target)
-		tick_bleed(target)
-		check_battle()
+func make_intent(target: Dictionary) -> Dictionary:
+	var step := (round_no-1)%3
+	if target.id == "watcher" and step == 1:
+		return {"name":"筑甲","damage":0,"hits":0,"block":12,"bleed":0}
+	if target.id == "warden" and step == 0:
+		return {"name":"蓄势","damage":0,"hits":0,"block":8,"bleed":0}
+	var hits := 2 if target.id in ["crawler","drone"] and step == 1 else 1
+	var raw := int(target.attack) + (8 if target.id == "warden" and step == 1 else 0)
+	if hits == 2:
+		raw = maxi(1,int(raw*0.65))
+	return {"name":"撕咬" if target.id == "crawler" and step == 2 else ("连击" if hits == 2 else "猛攻"),"damage":raw,"hits":hits,"block":0,"bleed":2 if target.id == "crawler" and step == 2 else 0}
+
+func intent_damage(target: Dictionary) -> int:
+	var amount := int(target.intent.get("damage",0))
+	if target.broken:
+		amount = int(amount*0.5)
+	return amount
 
 func unit_by_id(id: String) -> Dictionary:
 	if id == "player":
@@ -177,179 +218,128 @@ func unit_by_id(id: String) -> Dictionary:
 			return target
 	return {}
 
-func inside(point: Vector2i) -> bool:
-	return point.x >= 0 and point.y >= 0 and point.x < BOARD.x and point.y < BOARD.y
+func card_block(card: Dictionary) -> int:
+	if not card.has("block"):
+		return 0
+	return int(card.block) + int(player.defense/3) + int(player.agility/6) + (int(player.movement) if card.has("momentum") else 0)
 
-func occupied(point: Vector2i, ignore_id: String = "") -> bool:
-	if not inside(point) or walls.has(point):
-		return true
-	if player.id != ignore_id and player.position == point and player.hp > 0:
-		return true
-	for target in enemies:
-		if target.id != ignore_id and target.hp > 0 and target.position == point:
-			return true
-	return false
+func card_damage(card: Dictionary,target: Dictionary,critical: bool = false) -> int:
+	var raw := float(player.attack)*float(card.get("attack",0)) + float(card.get("flat",0)) + float(player.will)*float(card.get("will",0))
+	if not target.bleeds.is_empty():
+		raw += float(card.get("bleed_bonus",0))
+	var multiplier := (1.0+momentum) * (1.5 if target.get("vulnerable",0)>0 else 1.0)
+	if critical:
+		multiplier *= float(player.crit_damage)/100.0
+	return Rules.damage(raw,0 if card.has("will") else target.defense,player.penetration,multiplier)
 
-func path(start: Vector2i, goal: Vector2i, ignore_id: String = "player") -> Array:
-	if not inside(goal) or occupied(goal,ignore_id):
-		return []
-	var frontier: Array = [start]
-	var came := {start:start}
-	while not frontier.is_empty():
-		var current: Vector2i = frontier.pop_front()
-		if current == goal:
-			var route: Array = []
-			while current != start:
-				route.push_front(current)
-				current = came[current]
-			return route
-		for direction in DIRECTIONS:
-			var next: Vector2i = current + direction
-			if came.has(next) or occupied(next,ignore_id):
-				continue
-			came[next] = current
-			frontier.append(next)
-	return []
-
-func distance(a: Vector2i,b: Vector2i) -> int:
-	return absi(a.x-b.x) + absi(a.y-b.y)
-
-func face(from: Vector2i,to: Vector2i) -> Vector2i:
-	var delta := to-from
-	if absi(delta.x) >= absi(delta.y):
-		return Vector2i(signi(delta.x),0)
-	return Vector2i(0,signi(delta.y))
-
-func move_player(point: Vector2i) -> bool:
-	if phase != "combat" or not player_turn:
-		return fail("现在无法移动。")
-	var route := path(player.position,point)
-	if route.is_empty() or route.size() > movement:
-		return fail("路径不可达或移动力不足。")
-	player.facing = face(player.position,point)
-	player.position = point
-	movement -= route.size()
-	last_result = {"kind":"move","path":route}
-	return true
-
-func shadowstep(point: Vector2i) -> bool:
-	if phase != "combat" or not player_turn or ap < 1 or player.shadowstep < 1 or player.step_used:
-		return fail("影步需要装备对应词条，消耗1 AP，每回合限一次。")
-	if occupied(point) or distance(player.position,point) > 3:
-		return fail("请选择3格内的空位。")
-	player.facing = face(player.position,point)
-	player.position = point
-	player.step_used = true
-	ap -= 1
-	note("影步：跨越障碍，抵达新的位置。")
-	return true
-
-func strike(target_id: String, skill: String) -> bool:
-	if phase != "combat" or not player_turn or ap < 2:
-		return fail("攻击需要2 AP。")
+func play_card(index: int,target_id: String = "") -> bool:
+	if phase != "combat" or not player_turn or index < 0 or index >= hand.size():
+		return fail("请选择当前手牌。")
+	var id: String = hand[index]
+	var card: Dictionary = Cards.DATA[id]
+	if energy < int(card.cost):
+		return fail("能量不足。")
+	if player.hp <= int(card.get("hp_cost",0)):
+		return fail("生命不足，无法支付这张牌的代价。")
 	var target := unit_by_id(target_id)
-	if target.is_empty() or target.id == "player" or target.hp <= 0:
-		return fail("请选择存活敌人。")
-	if skill not in ["slash","rupture","dash"]:
-		return fail("未知技能。")
-	var dist := distance(player.position,target.position)
-	if skill == "dash":
-		if dist < 2 or dist > 4 or (player.position.x != target.position.x and player.position.y != target.position.y):
-			return fail("突进需要直线2–4格内目标。")
-		var direction: Vector2i = face(player.position,target.position)
-		var cursor: Vector2i = player.position + direction
-		while cursor != target.position:
-			if occupied(cursor):
-				return fail("突进路线被阻挡。")
-			cursor += direction
-		player.position = target.position - direction
-	elif dist != 1:
-		return fail("请先移动到目标相邻格。")
-	var backstab := Rules.behind(player.position,target.position,target.facing)
-	var coefficient := 0.75 if skill == "rupture" else (1.1 if skill == "dash" else 1.0)
-	ap -= 2
-	player.facing = face(player.position,target.position)
-	var result := Rules.resolve(player,target,rng,coefficient,backstab)
-	apply_attack(player,target,result)
-	if result.hit:
-		if skill == "rupture" or player.bleed > 0:
+	if card.has("attack") and (target.is_empty() or target_id == "player" or target.hp <= 0):
+		return fail("请点击一个存活敌人作为目标。")
+	energy -= int(card.cost)
+	ap = energy
+	hand.remove_at(index)
+	# Resolve draw before discarding this card, so it cannot draw itself.
+	player.hp -= int(card.get("hp_cost",0))
+	player.block += card_block(card)
+	if card.get("retain_block",false):
+		retain_block = true
+	if card.has("momentum"):
+		momentum += float(card.momentum) + float(player.movement)*0.05
+	energy += int(card.get("energy",0))
+	ap = energy
+	last_result = {"kind":"card","name":card.name,"target_id":target_id,"damage":0,"block":card_block(card),"crit":false}
+	if card.has("attack"):
+		var critical := rng.randi_range(1,100) <= clampi(int(player.crit),0,100)
+		var damage := card_damage(card,target,critical)
+		var absorbed := mini(int(target.block),damage)
+		target.block -= absorbed
+		target.hp = maxi(0,int(target.hp)-damage+absorbed)
+		last_result.damage = damage-absorbed
+		last_result.crit = critical
+		momentum = 0.0
+		if card.has("bleed") or player.bleed > 0:
 			if target.bleeds.size() < 3:
-				target.bleeds.append({"damage":3 + int(player.bleed),"turns":2})
-		var stagger_damage := 6 if skill == "dash" else 3
-		if int(target.guarded_round) < round_no:
-			target.toughness = maxi(0,int(target.toughness)-stagger_damage)
-			if target.toughness == 0:
-				target.broken = true
-				target.guarded_round = round_no + 1
-				note("%s 失衡：下一次攻击伤害降低。" % target.name)
+				target.bleeds.append({"damage":int(card.get("bleed",0))+int(player.bleed),"turns":2})
+		target.toughness = maxi(0,int(target.toughness)-int(card.get("stagger",2)))
+		if target.toughness == 0:
+			target.broken = true
+		target.vulnerable = maxi(int(target.vulnerable),int(card.get("vulnerable",0)))
+		note("%s → %s：%s%d伤害，格挡吸收%d。" % [card.name,target.name,"暴击 " if critical else "",damage-absorbed,absorbed])
+	else:
+		note("打出%s，获得%d格挡。" % [card.name,card_block(card)])
+	draw_cards(int(card.get("draw",0)))
+	if card.get("exhaust",false):
+		exhaust_pile.append(id)
+	else:
+		discard_pile.append(id)
 	check_battle()
-	return true
-
-func apply_attack(attacker: Dictionary,target: Dictionary,result: Dictionary) -> void:
-	result.kind = "attack"
-	result.target = target.position
-	result.actor = attacker.position
-	last_result = result
-	if not result.hit:
-		note("%s → %s：d100=%d / %d，未命中。" % [attacker.name,target.name,result.roll,result.chance])
-		return
-	if target.guard:
-		result.damage = maxi(1,int(result.damage * 0.5))
-	target.hp = maxi(0,int(target.hp)-int(result.damage))
-	note("%s → %s：d100=%d / %d，2d6=%d+%d，%s%d伤害。" % [attacker.name,target.name,result.roll,result.chance,result.dice[0],result.dice[1],"暴击！" if result.crit else "",result.damage])
-
-func guard() -> bool:
-	if phase != "combat" or not player_turn or ap < 1:
-		return fail("防御需要1 AP。")
-	if player.guard:
-		return fail("已处于防御姿态。")
-	ap -= 1
-	player.guard = true
-	note("举盾：下次自己行动前直接伤害减少50%。")
 	return true
 
 func end_turn() -> bool:
 	if phase != "combat" or not player_turn:
 		return false
 	player_turn = false
+	discard_pile.append_array(hand)
+	hand.clear()
+	var total_damage := 0
+	for target in enemies:
+		if target.hp <= 0:
+			continue
+		tick_bleed(target)
+		if target.hp <= 0:
+			continue
+		target.block = int(target.intent.get("block",0))
+		for _hit in range(int(target.intent.get("hits",0))):
+			var damage := intent_damage(target)
+			var absorbed := mini(int(player.block),damage)
+			player.block -= absorbed
+			player.hp = maxi(0,int(player.hp)-damage+absorbed)
+			total_damage += damage-absorbed
+			if target.intent.get("bleed",0)>0 and damage>absorbed and player.bleeds.size()<3:
+				player.bleeds.append({"damage":maxi(1,int(target.intent.bleed)-int(player.max_toughness/15)),"turns":2})
+		if target.broken:
+			target.broken = false
+			target.toughness = target.max_toughness
+		target.vulnerable = maxi(0,int(target.vulnerable)-1)
+		if player.hp <= 0:
+			break
 	tick_bleed(player)
+	last_result = {"kind":"enemy_turn","damage":total_damage}
+	note("敌方行动结束：承受%d点直接伤害。" % total_damage)
 	check_battle()
 	if phase == "combat":
-		advance_turns()
+		begin_round()
 	return true
 
 func heal() -> bool:
-	if phase != "combat" or not player_turn or ap < 1 or potions < 1:
-		return fail("疗伤药需要1 AP，每次探索补给2瓶。")
+	if phase != "combat" or not player_turn or energy < 1 or potions < 1:
+		return fail("疗伤药需要1能量，每次探索补给2瓶。")
 	if player.hp >= player.max_hp:
 		return fail("生命已满。")
 	potions -= 1
-	ap -= 1
+	energy -= 1
+	ap = energy
 	player.hp = mini(int(player.max_hp),int(player.hp)+30)
+	last_result = {"kind":"heal"}
 	note("使用疗伤药，恢复最多30生命。")
 	return true
 
-func enemy_turn(target: Dictionary) -> void:
-	var best_route: Array = []
-	for direction in DIRECTIONS:
-		var goal: Vector2i = player.position + direction
-		if goal == target.position:
-			best_route = []
-			break
-		var route := path(target.position,goal,target.id)
-		if not route.is_empty() and (best_route.is_empty() or route.size() < best_route.size()):
-			best_route = route
-	if not best_route.is_empty():
-		var destination: Vector2i = best_route[mini(int(target.movement),best_route.size())-1]
-		target.facing = face(target.position,destination)
-		target.position = destination
-	if distance(target.position,player.position) == 1:
-		target.facing = face(target.position,player.position)
-		var coefficient := 0.5 if target.broken else 1.0
-		apply_attack(target,player,Rules.resolve(target,player,rng,coefficient))
-	if target.broken:
-		target.broken = false
-		target.toughness = target.max_toughness
+func choose_reward(id: String) -> bool:
+	if phase != "loot" or not card_rewards.has(id):
+		return fail("当前没有这张卡牌奖励。")
+	run_deck.append(id)
+	card_rewards.clear()
+	note("%s加入本次探索牌组。" % Cards.DATA[id].name)
+	return true
 
 func tick_bleed(unit: Dictionary) -> void:
 	var expired: Array = []
@@ -383,6 +373,9 @@ func check_battle() -> void:
 			return
 	run_gold += 55 if room == 0 else 100
 	pending_loot = [make_item(),make_item(-1,2 if room == 1 else 1)]
+	card_rewards = Cards.REWARDS.duplicate()
+	shuffle_cards(card_rewards)
+	card_rewards = card_rewards.slice(0,3) if room == 0 else []
 	after_loot = "event" if room == 0 else "exit"
 	phase = "loot"
 	player_turn = false
@@ -402,6 +395,7 @@ func take_loot(id: String) -> bool:
 
 func continue_route() -> bool:
 	if phase == "loot":
+		card_rewards.clear()
 		pending_loot.clear()
 		phase = after_loot
 		if phase == "next_battle":
@@ -416,6 +410,7 @@ func resolve_event(choice: String) -> bool:
 	if choice not in ["perception","will","leave"]:
 		return false
 	event_used = true
+	card_rewards.clear()
 	if choice == "leave":
 		room = 1
 		start_encounter()
@@ -438,6 +433,7 @@ func resolve_event(choice: String) -> bool:
 func extract() -> bool:
 	if phase not in ["loot","event","exit"]:
 		return fail("战斗中无法直接撤离。")
+	card_rewards.clear()
 	gold += run_gold
 	note("撤离成功：带回%d金币和背包中的装备。" % run_gold)
 	run_gold = 0
@@ -496,7 +492,7 @@ func upgrade_weapon() -> bool:
 	return true
 
 func snapshot() -> Dictionary:
-	return encode({"version":SAVE_VERSION,"rng_seed":str(rng.seed),"rng_state":str(rng.state),"phase":phase,"room":room,"gold":gold,"run_gold":run_gold,"serial":serial,"bag":bag,"stash":stash,"equipment":equipment,"pending_loot":pending_loot,"after_loot":after_loot,"player":player,"enemies":enemies,"walls":walls,"turn_queue":turn_queue,"round_no":round_no,"player_turn":player_turn,"ap":ap,"movement":movement,"potions":potions,"log_lines":log_lines,"last_result":last_result,"event_used":event_used})
+	return encode({"version":SAVE_VERSION,"run_deck":run_deck,"draw_pile":draw_pile,"hand":hand,"discard_pile":discard_pile,"exhaust_pile":exhaust_pile,"card_rewards":card_rewards,"energy":energy,"momentum":momentum,"retain_block":retain_block,"rng_seed":str(rng.seed),"rng_state":str(rng.state),"phase":phase,"room":room,"gold":gold,"run_gold":run_gold,"serial":serial,"bag":bag,"stash":stash,"equipment":equipment,"pending_loot":pending_loot,"after_loot":after_loot,"player":player,"enemies":enemies,"walls":walls,"turn_queue":turn_queue,"round_no":round_no,"player_turn":player_turn,"ap":ap,"movement":movement,"potions":potions,"log_lines":log_lines,"last_result":last_result,"event_used":event_used})
 
 func encode(value: Variant) -> Variant:
 	if value is Vector2i:
@@ -529,28 +525,57 @@ func decode(value: Variant) -> Variant:
 	return value
 
 func restore(data: Variant) -> bool:
-	if not data is Dictionary or int(data.get("version",0)) != SAVE_VERSION:
+	if not data is Dictionary or int(data.get("version",0)) not in [1,SAVE_VERSION]:
 		return false
+	var legacy := int(data.version) == 1
+	var converted: Dictionary = data.duplicate(true)
+	if legacy:
+		for key in ["run_deck","draw_pile","hand","discard_pile","exhaust_pile","card_rewards"]:
+			converted[key] = []
+		converted.energy = 3
+		converted.momentum = 0.0
+		converted.retain_block = false
 	for key in snapshot():
-		if not data.has(key):
+		if not converted.has(key):
 			return false
-	if not data.bag is Array or not data.stash is Array or not data.equipment is Dictionary or not data.pending_loot is Array:
+	if not converted.bag is Array or not converted.stash is Array or not converted.equipment is Dictionary or not converted.pending_loot is Array:
 		return false
-	if not Inventory.validate(data.bag,BAG) or not Inventory.validate(data.stash,STASH):
+	if not Inventory.validate(converted.bag,BAG) or not Inventory.validate(converted.stash,STASH):
 		return false
-	if data.phase not in ["camp","combat","loot","event","exit"] or int(data.gold) < 0:
+	if converted.phase not in ["camp","combat","loot","event","exit"] or int(converted.gold) < 0:
 		return false
+	for key in ["run_deck","draw_pile","hand","discard_pile","exhaust_pile","card_rewards"]:
+		if not converted[key] is Array:
+			return false
+		for id in converted[key]:
+			if not id is String or not Cards.DATA.has(id):
+				return false
+	if converted.hand.size()>10 or int(converted.energy)<0:
+		return false
+	if not legacy and converted.phase == "combat":
+		var all_cards: Array = converted.draw_pile + converted.hand + converted.discard_pile + converted.exhaust_pile
+		var deck_copy: Array = converted.run_deck.duplicate()
+		all_cards.sort()
+		deck_copy.sort()
+		if all_cards != deck_copy or deck_copy.is_empty():
+			return false
 	var ids := {}
-	for item in data.bag + data.stash + data.equipment.values() + data.pending_loot:
+	for item in converted.bag + converted.stash + converted.equipment.values() + converted.pending_loot:
 		if not item is Dictionary or not item.has("id") or ids.has(str(item.id)):
 			return false
 		ids[str(item.id)] = true
-	var decoded: Dictionary = decode(data)
-	for key in decoded:
+	var decoded: Dictionary = decode(converted)
+	for key in snapshot():
 		if key not in ["version","rng_seed","rng_state"]:
 			set(key,decoded[key])
-	rng.seed = str(data.rng_seed).to_int()
-	rng.state = str(data.rng_state).to_int()
+	rng.seed = str(converted.rng_seed).to_int()
+	rng.state = str(converted.rng_state).to_int()
+	if legacy:
+		run_deck = starting_deck()
+		player.block = 0
+		if phase == "combat":
+			start_encounter()
+		note("存档已升级为卡牌版：装备、仓库、金币和生命保留；进行中的旧战斗从当前房间重新开始。")
 	return true
 
 func save_game() -> bool:
@@ -571,6 +596,8 @@ func load_game() -> bool:
 			if parser.parse(FileAccess.get_file_as_string(candidate)) != OK:
 				continue
 			if restore(parser.data):
+				if int(parser.data.version)==1 and not FileAccess.file_exists(save_path+".v1"):
+					DirAccess.copy_absolute(candidate,save_path+".v1")
 				if candidate.ends_with(".bak"):
 					note("主存档不可用，已恢复最近的备份。")
 				return true

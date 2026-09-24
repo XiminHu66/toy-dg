@@ -10,8 +10,10 @@ metadata is retained in the font; the derivative family was renamed Dungeon Sans
 It is licensed under the SIL Open Font License 1.1, included in
 `assets/fonts/OFL.txt`. This font license does not license the game code.
 
-Current character, board and inventory placeholders are drawn directly by project
-code. They are prototype graphics, not the approved final anime art direction.
-No third-party game character assets or AI-generated images are included yet.
+`assets/art/sealed-sanctum.webp` and `assets/art/rin.webp` are original AI-generated
+illustrations created for this project using the built-in image generation tool.
+Generation prompts and provenance are documented in `docs/art-provenance.md`.
+Enemy sigils, card ornaments, and inventory symbols are drawn by project code.
+No Slay the Spire or Chaos Zero Nightmare artwork, text, or audio is included.
 
 The game repository has no project-wide open-source license selected yet.
