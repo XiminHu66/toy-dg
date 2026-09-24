@@ -27,11 +27,11 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 func center(index: int) -> Vector2:
-	var step := Vector2((size.x-76)/6,(size.y-72)/4)
-	return Vector2(38,36)+Vector2(index%7,index/7)*step
+	var step := Vector2((size.x-76)/6,(size.y-100)/4)
+	return Vector2(38,50)+Vector2(index%7,index/7)*step
 
 func radius() -> float:
-	return minf(27,minf((size.x-76)/6,(size.y-72)/4)*0.37)
+	return minf(27,minf((size.x-76)/6,(size.y-100)/4)*0.37)
 
 func hit(point: Vector2) -> int:
 	for i in range(Dungeon.COUNT):

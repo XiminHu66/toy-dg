@@ -243,6 +243,9 @@ func _ready() -> void:
 			camp_tab = tab
 			refresh()
 			await settle_layout(tab)
+			if tab in ["工坊","抽奖"]:
+				expand_rule_panels(body)
+				await settle_layout(tab+"-expanded")
 		game.gold = 500
 		game.stash.clear()
 		camp_tab = "抽奖"
@@ -254,6 +257,12 @@ func _ready() -> void:
 			push_error("Relic reveal did not protect against duplicate purchase")
 		print("UI_SMOKE_OK")
 		get_tree().quit()
+
+func expand_rule_panels(parent: Node) -> void:
+	for child in parent.get_children():
+		if child is Button and child.text.begins_with("＋ "):
+			child.pressed.emit()
+		expand_rule_panels(child)
 
 func settle_layout(name_value: String) -> void:
 	await get_tree().create_timer(0.65).timeout
@@ -1016,6 +1025,7 @@ func shop_room(column: VBoxContainer) -> void:
 		button(row,"出售",func(): confirm_sell(item,source),item.get("locked",false))
 
 func craft_room(column: VBoxContainer) -> void:
+	column = scrolling_column(column)
 	label(column,"工坊 / 强化与附魔",29,"e9d2aa")
 	foldout(column,"工坊规则与费用","强化最高+5，每级基础属性+2。附魔使用独立词条槽，重铸保留原掉落词条。")
 	if game.owned_item(craft_id).is_empty():
