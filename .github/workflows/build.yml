@@ -41,7 +41,7 @@ jobs:
                       (dest/pathlib.Path(name).name).write_bytes(archive.read(name))
           PY
       - name: Stamp visible game version
-        run: python3 -c 'import json,os,pathlib; pathlib.Path("data/build.json").write_text(json.dumps({"version":"0.2."+os.environ["GITHUB_RUN_NUMBER"]}))'
+        run: python3 -c 'import json,os,pathlib; pathlib.Path("data/build.json").write_text(json.dumps({"version":"0.3."+os.environ["GITHUB_RUN_NUMBER"]}))'
       - name: Import, rule tests, save tests, full route and UI smoke
         run: python3 scripts/ci_check.py
       - name: Capture desktop interface
@@ -63,7 +63,7 @@ jobs:
       - name: Package versioned release
         id: package
         run: |
-          version="0.2.${GITHUB_RUN_NUMBER}"
+          version="0.3.${GITHUB_RUN_NUMBER}"
           python3 scripts/package_release.py "$version" "$GITHUB_SHA"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

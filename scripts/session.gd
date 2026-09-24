@@ -5,7 +5,7 @@ const BOARD := Vector2i(8,6)
 const BAG := Vector2i(6,5)
 const STASH := Vector2i(10,8)
 const DIRECTIONS := [Vector2i.LEFT,Vector2i.RIGHT,Vector2i.UP,Vector2i.DOWN]
-const SAVE_VERSION := 3
+const SAVE_VERSION := 4
 const Dungeon = preload("res://scripts/dungeon.gd")
 const DRAW_COST := 120
 const Cards = preload("res://scripts/cards.gd")
@@ -23,7 +23,14 @@ var hand: Array = []
 var discard_pile: Array = []
 var exhaust_pile: Array = []
 var card_rewards: Array = []
-var energy := 3
+var energy := 2
+var runes := 0
+var market: Array = []
+var played_pile: Array = []
+var constructs: Array = []
+var market_buys := 0
+var market_refresh_used := false
+var purge_used := false
 var momentum := 0.0
 var retain_block := false
 
@@ -126,6 +133,9 @@ func start_run() -> bool:
 	potions = 2
 	pending_loot.clear()
 	run_deck = starting_deck()
+	runes = 0
+	market.clear()
+	refill_market()
 	card_rewards.clear()
 	dungeon = Dungeon.generate(rng)
 	map_position = 0
@@ -163,6 +173,13 @@ func draw_cards(count: int) -> void:
 
 func start_encounter() -> void:
 	phase = "combat"
+	runes = mini(12,runes+2)
+	market_buys = 0
+	market_refresh_used = false
+	purge_used = false
+	played_pile.clear()
+	constructs.clear()
+	refill_market()
 	player.bleeds = []
 	player.block = 0
 	player.broken = false
@@ -171,14 +188,14 @@ func start_encounter() -> void:
 	turn_queue.clear()
 	enemies.clear()
 	if encounter_kind == "combat":
-		enemies.append(enemy("watcher","铜壳守卫",Vector2i(5,2),46,11,8,8))
-		enemies.append(enemy("crawler","裂隙猎犬",Vector2i(6,4),32,9,3,14))
+		enemies.append(enemy("watcher","铜壳守卫",Vector2i(5,2),60,14,8,8))
+		enemies.append(enemy("crawler","裂隙猎犬",Vector2i(6,4),42,12,3,14))
 	else:
-		enemies.append(enemy("warden","遗迹监守者",Vector2i(6,2),85,15,18,9))
-		enemies.append(enemy("drone","符文浮游机",Vector2i(5,3),28,10,4,11))
+		enemies.append(enemy("warden","遗迹监守者",Vector2i(6,2),125,19,18,9))
+		enemies.append(enemy("drone","符文浮游机",Vector2i(5,3),40,12,4,11))
 	if encounter_kind == "elite":
-		enemies[0].hp = 65
-		enemies[0].max_hp = 65
+		enemies[0].hp = 90
+		enemies[0].max_hp = 90
 	if run_deck.is_empty():
 		run_deck = starting_deck()
 	draw_pile = run_deck.duplicate()
@@ -197,14 +214,16 @@ func enemy(id: String, name_value: String, pos: Vector2i, health: int, attack: i
 
 func begin_round() -> void:
 	round_no += 1
-	energy = 3
+	energy = 2 + (1 if constructs.has("forge") else 0)
 	ap = energy
 	momentum = 0.0
 	if not retain_block:
 		player.block = 0
 	retain_block = false
+	if constructs.has("ward"):
+		player.block += 5
 	player_turn = true
-	draw_cards(5 + (clampi(int((player.speed-12)/3),0,2) if round_no == 1 else 0))
+	draw_cards(5 + (clampi(int((player.speed-12)/6),0,2) if round_no == 1 else 0))
 	for target in enemies:
 		if target.hp > 0:
 			target.intent = make_intent(target)
@@ -223,6 +242,8 @@ func make_intent(target: Dictionary) -> Dictionary:
 
 func intent_damage(target: Dictionary) -> int:
 	var amount := int(target.intent.get("damage",0))
+	if amount>0:
+		amount += maxi(0,round_no-5)*2
 	if target.broken:
 		amount = int(amount*0.5)
 	return amount
@@ -238,13 +259,13 @@ func unit_by_id(id: String) -> Dictionary:
 func card_block(card: Dictionary) -> int:
 	if not card.has("block"):
 		return 0
-	return int(card.block) + int(player.defense/3) + int(player.agility/6) + (int(player.movement) if card.has("momentum") else 0)
+	return int(card.block) + int(player.defense/4) + int(player.agility/8) + (int(player.movement) if card.has("momentum") else 0)
 
 func card_damage(card: Dictionary,target: Dictionary,critical: bool = false) -> int:
 	var raw := float(player.attack)*float(card.get("attack",0)) + float(card.get("flat",0)) + float(player.will)*float(card.get("will",0))
 	if not target.bleeds.is_empty():
 		raw += float(card.get("bleed_bonus",0))
-	var multiplier := (1.0+momentum) * (1.5 if target.get("vulnerable",0)>0 else 1.0)
+	var multiplier := (1.0+momentum) * (1.25 if target.get("vulnerable",0)>0 else 1.0)
 	if critical:
 		multiplier *= float(player.crit_damage)/100.0
 	return Rules.damage(raw,0 if card.has("will") else target.defense,player.penetration,multiplier)
@@ -255,12 +276,14 @@ func play_card(index: int,target_id: String = "") -> bool:
 	var id: String = hand[index]
 	var card: Dictionary = Cards.DATA[id]
 	if energy < int(card.cost):
-		return fail("能量不足。")
+		return fail("战意不足，先打出折光斩或掠影积累战意。")
 	if player.hp <= int(card.get("hp_cost",0)):
 		return fail("生命不足，无法支付这张牌的代价。")
 	var target := unit_by_id(target_id)
 	if card.has("attack") and (target.is_empty() or target_id == "player" or target.hp <= 0):
 		return fail("请点击一个存活敌人作为目标。")
+	if card.has("construct") and (constructs.size()>=2 or constructs.has(id)):
+		return fail("阵式最多2个，同名阵式不能重复入场。")
 	energy -= int(card.cost)
 	ap = energy
 	hand.remove_at(index)
@@ -270,8 +293,9 @@ func play_card(index: int,target_id: String = "") -> bool:
 	if card.get("retain_block",false):
 		retain_block = true
 	if card.has("momentum"):
-		momentum += float(card.momentum) + float(player.movement)*0.05
-	energy += int(card.get("energy",0))
+		momentum = minf(0.8,momentum+float(card.momentum)+float(player.movement)*0.03)
+	energy = mini(8,energy+int(card.get("energy",0)))
+	runes = mini(12,runes+int(card.get("runes",0)))
 	ap = energy
 	last_result = {"kind":"card","name":card.name,"target_id":target_id,"damage":0,"block":card_block(card),"crit":false}
 	if card.has("attack"):
@@ -292,12 +316,25 @@ func play_card(index: int,target_id: String = "") -> bool:
 		target.vulnerable = maxi(int(target.vulnerable),int(card.get("vulnerable",0)))
 		note("%s → %s：%s%d伤害，格挡吸收%d。" % [card.name,target.name,"暴击 " if critical else "",damage-absorbed,absorbed])
 	else:
-		note("打出%s，获得%d格挡。" % [card.name,card_block(card)])
+		var details: Array = []
+		if card_block(card)>0:
+			details.append("%d格挡" % card_block(card))
+		if card.has("energy"):
+			details.append("战意 %d/8" % energy)
+		if card.has("runes"):
+			details.append("灵纹 %d/12" % runes)
+		if card.has("draw"):
+			details.append("抽%d张" % card.draw)
+		if card.has("construct"):
+			details.append("下回合开始持续生效")
+		note("%s：%s。" % [card.name," · ".join(details)])
 	draw_cards(int(card.get("draw",0)))
-	if card.get("exhaust",false):
+	if card.has("construct"):
+		constructs.append(id)
+	elif card.get("exhaust",false):
 		exhaust_pile.append(id)
 	else:
-		discard_pile.append(id)
+		played_pile.append(id)
 	check_battle()
 	return true
 
@@ -305,6 +342,10 @@ func end_turn() -> bool:
 	if phase != "combat" or not player_turn:
 		return false
 	player_turn = false
+	player.block += reserve_block()
+	energy = 0
+	discard_pile.append_array(played_pile)
+	played_pile.clear()
 	discard_pile.append_array(hand)
 	hand.clear()
 	var total_damage := 0
@@ -339,7 +380,7 @@ func end_turn() -> bool:
 
 func heal() -> bool:
 	if phase != "combat" or not player_turn or energy < 1 or potions < 1:
-		return fail("疗伤药需要1能量，每次探索补给2瓶。")
+		return fail("疗伤药需要1战意，每次探索补给2瓶。")
 	if player.hp >= player.max_hp:
 		return fail("生命已满。")
 	potions -= 1
@@ -351,7 +392,7 @@ func heal() -> bool:
 	return true
 
 func choose_reward(id: String) -> bool:
-	if phase != "loot" or not card_rewards.has(id):
+	if phase != "loot" or not card_rewards.has(id) or run_deck.size()>=18:
 		return fail("当前没有这张卡牌奖励。")
 	run_deck.append(id)
 	card_rewards.clear()
@@ -390,9 +431,7 @@ func check_battle() -> void:
 			return
 	run_gold += 55 if room == 0 else 100
 	pending_loot = [make_item(),make_item(-1,2 if room == 1 else 1)]
-	card_rewards = Cards.REWARDS.duplicate()
-	shuffle_cards(card_rewards)
-	card_rewards = card_rewards.slice(0,3) if room == 0 else []
+	card_rewards.clear()
 	after_loot = "explore" if not dungeon.is_empty() else ("event" if room == 0 else "exit")
 	if not dungeon.is_empty():
 		dungeon[map_position].cleared = true
@@ -675,7 +714,7 @@ func scout_tile(index: int) -> bool:
 	return true
 
 func snapshot() -> Dictionary:
-	return encode({"version":SAVE_VERSION,"dungeon":dungeon,"map_position":map_position,"encounter_kind":encounter_kind,"scouts":scouts,"draw_pity":draw_pity,"draw_history":draw_history,"run_deck":run_deck,"draw_pile":draw_pile,"hand":hand,"discard_pile":discard_pile,"exhaust_pile":exhaust_pile,"card_rewards":card_rewards,"energy":energy,"momentum":momentum,"retain_block":retain_block,"rng_seed":str(rng.seed),"rng_state":str(rng.state),"phase":phase,"room":room,"gold":gold,"run_gold":run_gold,"serial":serial,"bag":bag,"stash":stash,"equipment":equipment,"pending_loot":pending_loot,"after_loot":after_loot,"player":player,"enemies":enemies,"walls":walls,"turn_queue":turn_queue,"round_no":round_no,"player_turn":player_turn,"ap":ap,"movement":movement,"potions":potions,"log_lines":log_lines,"last_result":last_result,"event_used":event_used})
+	return encode({"version":SAVE_VERSION,"runes":runes,"market":market,"played_pile":played_pile,"constructs":constructs,"market_buys":market_buys,"market_refresh_used":market_refresh_used,"purge_used":purge_used,"dungeon":dungeon,"map_position":map_position,"encounter_kind":encounter_kind,"scouts":scouts,"draw_pity":draw_pity,"draw_history":draw_history,"run_deck":run_deck,"draw_pile":draw_pile,"hand":hand,"discard_pile":discard_pile,"exhaust_pile":exhaust_pile,"card_rewards":card_rewards,"energy":energy,"momentum":momentum,"retain_block":retain_block,"rng_seed":str(rng.seed),"rng_state":str(rng.state),"phase":phase,"room":room,"gold":gold,"run_gold":run_gold,"serial":serial,"bag":bag,"stash":stash,"equipment":equipment,"pending_loot":pending_loot,"after_loot":after_loot,"player":player,"enemies":enemies,"walls":walls,"turn_queue":turn_queue,"round_no":round_no,"player_turn":player_turn,"ap":ap,"movement":movement,"potions":potions,"log_lines":log_lines,"last_result":last_result,"event_used":event_used})
 
 func encode(value: Variant) -> Variant:
 	if value is Vector2i:
@@ -708,10 +747,18 @@ func decode(value: Variant) -> Variant:
 	return value
 
 func restore(data: Variant) -> bool:
-	if not data is Dictionary or int(data.get("version",0)) not in [1,2,SAVE_VERSION]:
+	if not data is Dictionary or int(data.get("version",0)) not in [1,2,3,SAVE_VERSION]:
 		return false
 	var legacy := int(data.version) == 1
 	var converted: Dictionary = data.duplicate(true)
+	if int(data.version)<4:
+		converted.runes = 2 if converted.phase!="camp" else 0
+		converted.market = []
+		converted.played_pile = []
+		converted.constructs = []
+		converted.market_buys = 0
+		converted.market_refresh_used = false
+		converted.purge_used = false
 	if int(data.version)<3:
 		converted.dungeon = []
 		converted.map_position = 0
@@ -722,7 +769,7 @@ func restore(data: Variant) -> bool:
 	if legacy:
 		for key in ["run_deck","draw_pile","hand","discard_pile","exhaust_pile","card_rewards"]:
 			converted[key] = []
-		converted.energy = 3
+		converted.energy = 2
 		converted.momentum = 0.0
 		converted.retain_block = false
 	for key in snapshot():
@@ -734,7 +781,7 @@ func restore(data: Variant) -> bool:
 		return false
 	if converted.phase not in ["camp","combat","loot","event","exit","explore"] or int(converted.gold) < 0:
 		return false
-	for key in ["run_deck","draw_pile","hand","discard_pile","exhaust_pile","card_rewards"]:
+	for key in ["run_deck","draw_pile","hand","discard_pile","exhaust_pile","card_rewards","played_pile","constructs","market"]:
 		if not converted[key] is Array:
 			return false
 		for id in converted[key]:
@@ -743,7 +790,7 @@ func restore(data: Variant) -> bool:
 	if converted.hand.size()>10 or int(converted.energy)<0:
 		return false
 	if not legacy and converted.phase == "combat":
-		var all_cards: Array = converted.draw_pile + converted.hand + converted.discard_pile + converted.exhaust_pile
+		var all_cards: Array = converted.draw_pile + converted.hand + converted.discard_pile + converted.exhaust_pile + converted.played_pile + converted.constructs
 		var deck_copy: Array = converted.run_deck.duplicate()
 		all_cards.sort()
 		deck_copy.sort()
@@ -755,6 +802,16 @@ func restore(data: Variant) -> bool:
 		return false
 	if int(converted.draw_pity)<0 or int(converted.draw_pity)>9 or int(converted.scouts)<0 or not converted.draw_history is Array:
 		return false
+	if int(converted.runes)<0 or int(converted.runes)>12 or int(converted.market_buys)<0 or int(converted.market_buys)>2 or converted.market.size()>3 or converted.constructs.size()>2:
+		return false
+	if not converted.purge_used is bool or not converted.market_refresh_used is bool:
+		return false
+	for id in converted.market:
+		if id not in Cards.MARKET:
+			return false
+	for id in converted.constructs:
+		if not Cards.DATA[id].has("construct") or converted.constructs.count(id)>1:
+			return false
 	var ids := {}
 	for item in converted.bag + converted.stash + converted.equipment.values() + converted.pending_loot:
 		if not item is Dictionary or not item.has("id") or ids.has(str(item.id)):
@@ -766,6 +823,8 @@ func restore(data: Variant) -> bool:
 			set(key,decoded[key])
 	rng.seed = str(converted.rng_seed).to_int()
 	rng.state = str(converted.rng_state).to_int()
+	if int(data.version)<4:
+		refill_market()
 	if legacy:
 		run_deck = starting_deck()
 		player.block = 0
@@ -799,4 +858,59 @@ func load_game() -> bool:
 				if candidate.ends_with(".bak"):
 					note("主存档不可用，已恢复最近的备份。")
 				return true
+	return false
+
+func reserve_block() -> int:
+	return mini(3,energy)*(2+clampi(int(player.toughness/20),0,1))
+
+func refill_market(excluded: Array = []) -> void:
+	while market.size()<3:
+		var pool: Array = []
+		for id in Cards.MARKET:
+			if id not in market and id not in excluded and (not Cards.DATA[id].has("construct") or id not in run_deck):
+				pool.append(id)
+		if pool.is_empty():
+			break
+		market.append(pool[rng.randi_range(0,pool.size()-1)])
+
+func acquire_card(index: int) -> bool:
+	if phase!="combat" or not player_turn or index<0 or index>=market.size():
+		return fail("只能在自己的战斗回合研习。")
+	var id: String = market[index]
+	var price: int = Cards.DATA[id].price
+	if runes<price or market_buys>=2 or run_deck.size()>=18:
+		return fail("灵纹不足、已购2次，或牌组已达18张。")
+	runes -= price
+	market_buys += 1
+	run_deck.append(id)
+	discard_pile.append(id)
+	market.remove_at(index)
+	refill_market()
+	last_result = {"kind":"market"}
+	note("研习%s：进入弃牌堆，后续洗牌后抽到。" % Cards.DATA[id].name)
+	return true
+
+func refresh_market() -> bool:
+	if phase!="combat" or not player_turn or market_refresh_used or runes<1:
+		return fail("每场可花1灵纹刷新一次。")
+	runes -= 1
+	market_refresh_used = true
+	var old_offers := market.duplicate()
+	market.clear()
+	refill_market(old_offers)
+	last_result = {"kind":"market"}
+	return true
+
+func purge_card(id: String) -> bool:
+	if phase!="combat" or not player_turn or purge_used or runes<3 or run_deck.size()<=8 or id not in ["strike","guard","study"] or not run_deck.has(id):
+		return fail("每场可花3灵纹精简1张基础牌，牌组至少8张。")
+	for zone in [hand,draw_pile,discard_pile,played_pile,exhaust_pile]:
+		if zone.has(id):
+			zone.erase(id)
+			run_deck.erase(id)
+			runes -= 3
+			purge_used = true
+			last_result = {"kind":"market"}
+			note("精简%s：本次探索移除一张。" % Cards.DATA[id].name)
+			return true
 	return false

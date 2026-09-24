@@ -56,7 +56,7 @@ func _ready() -> void:
 	description.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_label(column,("消耗" if card.get("exhaust",false) else card.type)+("  [%d]" % (ordinal%10) if ordinal>0 else ""),12,Color("97b1c7"))
 	ignore_mouse(margin)
-	tooltip_text = card.text+"\n"+summary
+	tooltip_text = "消耗%d战意\n" % card.cost+card.text+"\n"+summary
 	# Keep text legible when unaffordable; only tint the artwork.
 	if disabled:
 		art.modulate.a = 0.35

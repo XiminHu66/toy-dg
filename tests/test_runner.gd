@@ -15,6 +15,7 @@ func _initialize() -> void:
 	test_rules()
 	test_inventory()
 	test_combat()
+	test_resource_engine()
 	test_economy()
 	test_save()
 	test_full_run()
@@ -82,7 +83,7 @@ func test_inventory() -> void:
 func test_combat() -> void:
 	var s := Session.new(2)
 	begin_combat(s)
-	check(s.player_turn and s.energy==3 and s.hand.size()==5,"first turn draws five and grants three energy")
+	check(s.player_turn and s.energy==2 and s.hand.size()==5,"first turn draws five and grants two power")
 	check(s.run_deck.has("heavy"),"sword contributes equipment card")
 	check(s.draw_pile.size()+s.hand.size()==s.run_deck.size(),"opening deck conservation")
 	var target: Dictionary = s.enemies[0]
@@ -94,11 +95,12 @@ func test_combat() -> void:
 	var predicted := s.card_damage(Session.Cards.DATA.strike,target)
 	var health := int(target.hp)
 	check(s.play_card(0,target.id),"attack plays")
-	check(target.hp==health-predicted and s.energy==2,"noncritical hit equals preview")
+	check(target.hp==health-predicted and s.energy==3,"noncritical hit equals preview")
 	check(s.play_card(0),"guard plays")
 	check(s.player.block==s.card_block(Session.Cards.DATA.guard),"armor and agility contribute to block")
 	check(s.play_card(0),"zero cost focus plays")
 	check(s.exhaust_pile.has("focus") and not s.discard_pile.has("focus"),"exhaust excludes reshuffle")
+	s.energy = 1
 	before = s.snapshot()
 	check(not s.play_card(s.hand.find("break"),target.id),"insufficient energy rejected")
 	check(s.snapshot()==before,"failed energy check atomic")
@@ -142,7 +144,7 @@ func test_combat() -> void:
 	fresh.player.block = 99
 	fresh.retain_block = false
 	fresh.end_turn()
-	check(fresh.player.block==0 and fresh.energy==3,"block expires and energy refreshes at turn start")
+	check(fresh.player.block==0 and fresh.energy==2,"block expires and energy refreshes at turn start")
 	fresh.player.block = 99
 	fresh.retain_block = true
 	fresh.end_turn()
@@ -399,3 +401,72 @@ func test_map_run() -> void:
 	var earned := s.run_gold
 	check(s.extract() and s.gold==before+earned,"map loot settles exactly once")
 	check(not s.extract(),"cannot settle map twice")
+
+func test_resource_engine() -> void:
+	var s := Session.new(501)
+	begin_combat(s)
+	check(s.run_deck.size()==10 and s.runes==2,"ten-card starter and encounter income")
+	s.player.crit = 0
+	s.hand = ["quick","quick","strike"]
+	s.run_deck = s.hand.duplicate()
+	s.draw_pile.clear()
+	s.discard_pile.clear()
+	check(s.play_card(0,s.enemies[0].id),"can play cycle card")
+	check(s.hand==["quick","strike"] and s.played_pile==["quick"],"played cards cannot reshuffle in same turn")
+	var saved := Session.new(1)
+	check(saved.restore(JSON.parse_string(JSON.stringify(s.snapshot()))),"played zone participates in save conservation")
+	check(saved.played_pile==s.played_pile,"played zone preserved")
+	s.energy = 8
+	check(s.reserve_block()==6,"reserve defense capped at three power")
+	s.player.toughness = 25
+	check(s.reserve_block()==9,"toughness improves reserve defense")
+	s = Session.new(502)
+	begin_combat(s)
+	s.runes = 12
+	s.market = ["forge","echo","rupture"]
+	check(s.acquire_card(0),"market acquires construct")
+	check(s.runes==7 and s.discard_pile.has("forge") and not s.hand.has("forge"),"purchase enters discard and charges exact price")
+	check(not s.market.has("forge") and s.market.size()==3,"construct is unique and offer refills")
+	s.discard_pile.erase("forge")
+	s.hand.append("forge")
+	check(s.play_card(s.hand.find("forge")),"construct can enter play")
+	check(s.constructs==["forge"] and not s.played_pile.has("forge"),"construct remains on table")
+	s.end_turn()
+	check(s.energy==3,"forge grants power on next turn")
+	check(saved.restore(JSON.parse_string(JSON.stringify(s.snapshot()))) and saved.constructs==["forge"],"construct saves and restores with card conservation")
+	s.runes = 0
+	var before := s.snapshot()
+	check(not s.acquire_card(0) and s.snapshot()==before,"unaffordable purchase preserves all state and RNG")
+	s.runes = 12
+	var old_offers := s.market.duplicate()
+	check(s.refresh_market(),"one paid market refresh")
+	check(s.market.all(func(id): return id not in old_offers),"paid refresh guarantees different offers")
+	before = s.snapshot()
+	check(not s.refresh_market() and s.snapshot()==before,"second refresh rejected atomically")
+	check(s.purge_card("strike") and s.run_deck.count("strike")==2 and s.runes==8,"purge removes one card and costs three")
+	before = s.snapshot()
+	check(not s.purge_card("guard") and s.snapshot()==before,"one purge per encounter")
+	check(saved.restore(JSON.parse_string(JSON.stringify(s.snapshot()))),"purging preserves exact deck and zones")
+	s = Session.new(503)
+	begin_combat(s)
+	s.runes = 11
+	s.draw_cards(10)
+	var study := s.hand.find("study")
+	check(study>=0 and s.play_card(study) and s.runes==12,"rune cap and study exhaustion")
+	check(s.exhaust_pile.has("study"),"study cannot farm every turn")
+	s = Session.new(504)
+	begin_combat(s)
+	var legacy := s.snapshot()
+	legacy.version = 3
+	for key in ["runes","market","played_pile","constructs","market_buys","market_refresh_used","purge_used"]:
+		legacy.erase(key)
+	check(saved.restore(JSON.parse_string(JSON.stringify(legacy))),"v3 migrates without restarting current combat")
+	check(saved.hand==s.hand and saved.gold==s.gold and saved.runes==2,"migration preserves equipment economy and current hand")
+	s.runes = 12
+	s.market_buys = 2
+	before = s.snapshot()
+	check(not s.acquire_card(0) and s.snapshot()==before,"purchase cap prevents endless combat growth")
+	s.round_no = 8
+	var enemy: Dictionary = s.enemies[0]
+	enemy.broken = false
+	check(s.intent_damage(enemy)==int(enemy.intent.damage)+6,"late combat pressure is visible in intent")

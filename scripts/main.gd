@@ -24,8 +24,9 @@ var rendered_hand: Array = []
 var rendered_round := -1
 var entering_cards: Array = []
 var combat_busy := false
+var market_window: AcceptDialog
 var input_shield: Control
-var build_version := "0.2.dev"
+var build_version := "0.3.dev"
 var board: Control
 var item_details: RichTextLabel
 var item_buttons: HBoxContainer
@@ -105,6 +106,9 @@ func _ready() -> void:
 		game.start_encounter()
 		refresh()
 		await capture_screen("combat")
+		show_market()
+		await capture_screen("market")
+		close_market()
 		selected_card = game.hand.find("strike")
 		refresh()
 		await capture_screen("targeting")
@@ -155,6 +159,11 @@ func _ready() -> void:
 			await get_tree().create_timer(0.7).timeout
 			if game.hand.size()!=count_before-1+int(Cards.DATA[drag.id].get("draw",0)):
 				push_error("Drag-to-enemy did not play card")
+		show_market()
+		await get_tree().process_frame
+		if not is_instance_valid(market_window) or not market_window.visible:
+			push_error("Study market did not open")
+		close_market()
 		var round_before := game.round_no
 		end_combat_turn()
 		end_combat_turn()
@@ -356,7 +365,7 @@ func camp(column: VBoxContainer) -> void:
 		var step := panel(itinerary,true)
 		label(step,entry[0],23,"68cdb9")
 		label(step,entry[1],15,"c6cfdc")
-	paragraph(column,"3 能量 · 每回合抽 5 张 · 可见敌人意图
+	paragraph(column,"双资源运营 · 每回合抽5张 · 基础牌免费
 探索7×5迷雾地图，数字提示危险；回营后交易、强化、抽奖和附魔。")
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation",14)
@@ -370,10 +379,15 @@ func camp(column: VBoxContainer) -> void:
 func card_summary(id: String) -> String:
 	var card: Dictionary = Cards.DATA[id]
 	if card.has("attack"):
-		return "攻击 ×%.0f%%" % (float(card.attack)*100)
+		var damage := game.card_damage(card,{"defense":0,"bleeds":[],"vulnerable":0})
+		return "基础伤害 %d%s" % [damage," / +1战意" if card.get("energy",0)>0 else ""]
+	if card.has("runes"):
+		return "+%d灵纹 · 本场消耗" % card.runes
+	if card.has("construct"):
+		return "持续阵式 · 本场生效"
 	if card.has("block"):
-		return "获得 %d 格挡" % game.card_block(card)
-	return "抽 %d 张" % card.draw if card.has("draw") else "获得 2 能量"
+		return "%d格挡%s" % [game.card_block(card)," / +1战意" if card.get("energy",0)>0 else ""]
+	return "抽 %d 张" % card.draw if card.has("draw") else "+2战意 / -5生命"
 
 func make_card(parent: Node,id: String,action: Callable,index: int = -1,disabled_value: bool = false) -> Button:
 	var view := CardView.new()
@@ -440,12 +454,16 @@ func combat(parent: Control) -> void:
 	var title := label(top,"核心守卫" if game.encounter_kind=="boss" else ("精英遭遇" if game.encounter_kind=="elite" else "迷雾遭遇"),22,"e5d1ad")
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	label(top,"第 %d 回合 · 手牌 %d" % [game.round_no,game.hand.size()],17,"c8d2e3")
+	button(top,"研习 · 灵纹 %d" % game.runes,show_market)
 	button(top,"行囊",show_bag)
 	button(top,"战斗记录",show_log)
 	if selected_card>=0 and selected_card<game.hand.size():
 		board.preview_card = game.hand[selected_card]
 	board.target_clicked.connect(on_target)
 	board.card_dropped.connect(submit_card)
+	var engines := label(board," / ".join(game.constructs.map(func(id): return Cards.DATA[id].name)),14,"c9b4e9")
+	engines.position = Vector2(24,64)
+	engines.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hand_dock = Control.new()
 	hand_dock.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	board.add_child(hand_dock)
@@ -477,11 +495,11 @@ func combat(parent: Control) -> void:
 	actions.offset_right = -22
 	actions.offset_top = -48
 	actions.offset_bottom = -10
-	label(actions,"%d / 3 能量" % game.energy,25,"83e0cf")
+	label(actions,"战意 %d" % game.energy,25,"83e0cf")
 	button(actions,"抽牌 %d" % game.draw_pile.size(),func(): var cards: Array=game.draw_pile.duplicate(); cards.sort(); show_pile("抽牌堆 · 不显示顺序",cards))
 	button(actions,"弃牌 %d" % game.discard_pile.size(),func(): show_pile("弃牌堆",game.discard_pile))
-	button(actions,"消耗 %d" % game.exhaust_pile.size(),func(): show_pile("消耗区",game.exhaust_pile))
-	var status_label := label(actions,"蓄势 +%d%%" % int(game.momentum*100) if game.momentum>0 else "1–9/0 选牌 · Esc 取消",14,"9caec0")
+	button(actions,"本回合 %d" % game.played_pile.size(),func(): show_pile("已打出 · 回合结束入弃牌堆",game.played_pile))
+	var status_label := label(actions,"蓄势 +%d%%" % int(game.momentum*100) if game.momentum>0 else "留力 +%d格挡" % game.reserve_block(),14,"9caec0")
 	status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	button(actions,"疗伤药 ×%d" % game.potions,func(): selected_card=-1; finish_action(game.heal()),game.energy<1 or game.potions<1 or game.player.hp>=game.player.max_hp)
 	var end := button(actions,"结束回合 [空格]",end_combat_turn)
@@ -617,6 +635,51 @@ func end_combat_turn() -> void:
 		tween.tween_callback(banner.queue_free)
 	await get_tree().create_timer(0.4).timeout
 	lock_combat(false)
+
+func show_market() -> void:
+	if combat_busy or game.phase!="combat":
+		return
+	market_window = AcceptDialog.new()
+	market_window.title = "研习市场 · 灵纹 %d/12 · 本场购买 %d/2" % [game.runes,game.market_buys]
+	market_window.ok_button_text = "返回战斗"
+	add_child(market_window)
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation",10)
+	market_window.add_child(column)
+	paragraph(column,"灵纹来自每场入场+2与研习牌。新牌进入弃牌堆；牌组与灵纹只在本次探索保留。")
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation",16)
+	column.add_child(row)
+	for i in range(game.market.size()):
+		var index := i
+		var id: String = game.market[i]
+		var cell := VBoxContainer.new()
+		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(cell)
+		label(cell,"%s · %d灵纹" % [Cards.DATA[id].school,Cards.DATA[id].price],18,"d2b3eb")
+		make_card(cell,id,func(): pass)
+		button(cell,"研习入组",func(): market_action(game.acquire_card(index)),game.runes<int(Cards.DATA[id].price) or game.market_buys>=2 or game.run_deck.size()>=18)
+	var options := HBoxContainer.new()
+	column.add_child(options)
+	button(options,"刷新 · 1灵纹",func(): market_action(game.refresh_market()),game.market_refresh_used or game.runes<1)
+	for id in ["strike","guard","study"]:
+		button(options,"精简%s · 3" % Cards.DATA[id].name,func(): market_action(game.purge_card(id)),game.purge_used or game.runes<3 or game.run_deck.size()<=8 or not game.run_deck.has(id))
+	paragraph(column,"本局牌组 %d/18 · 每场精简一次，至少留8张。免费基础牌积累战意，强力牌消耗战意；未用战意（最多3）在敌人行动前转为格挡。" % game.run_deck.size())
+	button(column,"查看牌组 / 消耗 / 阵式",func(): show_pile("本局牌组（包含阵式和本场消耗）",game.run_deck))
+	market_window.confirmed.connect(close_market)
+	market_window.canceled.connect(close_market)
+	market_window.popup_centered(Vector2i(780,480))
+
+func close_market() -> void:
+	if is_instance_valid(market_window):
+		market_window.queue_free()
+		market_window = null
+
+func market_action(success: bool) -> void:
+	close_market()
+	selected_card = -1
+	finish_action(success)
+	show_market()
 
 func show_log() -> void:
 	var dialog := AcceptDialog.new()
@@ -784,7 +847,7 @@ func confirm_sell(item: Dictionary,items: Array) -> void:
 	dialog.popup_centered(Vector2i(420,180))
 
 func _unhandled_key_input(event: InputEvent) -> void:
-	if combat_busy:
+	if combat_busy or is_instance_valid(market_window):
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_R and game.phase != "combat":
