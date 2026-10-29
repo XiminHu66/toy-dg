@@ -11,3 +11,4 @@
   updater tests for launcher changes. Keep source and generated builds separate.
 - Main builds may publish only after checks pass. Updates must preserve saves,
   validate downloads before activation, and retain an offline playable version.
+\n- Follow `.github/DEVELOPMENT.md`; run the Actions resource policy check before publishing workflow changes.\n
